@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: krushimitra_db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: krushimitra
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - krushimitra_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: krushimitra_cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - krushimitra_network
+
+  api:
+    build: .
+    container_name: krushimitra_api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      DATABASE_URL: "postgresql://admin:password123@postgres:5432/krushimitra?schema=public"
+      REDIS_HOST: "redis"
+      REDIS_PORT: 6379
+      PORT: 3000
+      JWT_SECRET: "supersafesecretkeyfor100kusers"
+      NODE_ENV: "development"
+    networks:
+      - krushimitra_network
+
+networks:
+  krushimitra_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+

@@ -1,0 +1,79 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  FARMER
+  LABOUR
+  TRANSPORTER
+}
+
+enum ListingType {
+  SELL
+  RENT
+}
+
+enum ListingStatus {
+  AVAILABLE
+  SOLD
+  IN_RENT
+}
+
+model User {
+  id                String      @id @default(uuid())
+  phoneNumber       String      @unique
+  name              String?
+  role              UserRole    @default(FARMER)
+  locationLat       Float?
+  locationLng       Float?
+  preferredLanguage String      @default("en")
+  isVerified        Boolean     @default(false)
+  fcmToken          String?     // For mobile push notifications
+  deviceOS          String?     // 'android' or 'ios'
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  listings          Machine[]
+  ordersAsBuyer     Order[]     @relation("BuyerOrders")
+  ordersAsSeller    Order[]     @relation("SellerOrders")
+}
+
+model Machine {
+  id             String        @id @default(uuid())
+  owner          User          @relation(fields: [ownerId], references: [id])
+  ownerId        String
+  category       String
+  brand          String
+  model          String
+  yearOfPurchase Int
+  listingType    ListingType   @default(SELL)
+  price          Decimal       @db.Decimal(10, 2)
+  rentUnit       String?       // HOURLY, DAILY
+  images         String[]
+  status         ListingStatus @default(AVAILABLE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  orders         Order[]
+}
+
+model Order {
+  id                   String   @id @default(uuid())
+  buyer                User     @relation("BuyerOrders", fields: [buyerId], references: [id])
+  buyerId              String
+  seller               User     @relation("SellerOrders", fields: [sellerId], references: [id])
+  sellerId             String
+  machine              Machine? @relation(fields: [machineId], references: [id])
+  machineId            String?
+  amount               Decimal  @db.Decimal(10, 2)
+  paymentStatus        String   @default("PENDING") // PENDING, PAID, FAILED
+  gatewayTransactionId String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
