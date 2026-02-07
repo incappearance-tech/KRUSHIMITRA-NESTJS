@@ -16,18 +16,44 @@ export class MachinesService {
     }
 
     async findAll(filters: MachineFilterDto) {
-        const { category, listingType, minPrice, maxPrice } = filters;
+        const { category, brand, search, listingType, minPrice, maxPrice, rentUnit } = filters;
+
+        const where: any = {
+            status: 'AVAILABLE',
+        };
+
+        if (category) {
+            where.category = category;
+        }
+
+        if (brand) {
+            where.brand = brand;
+        }
+
+        if (listingType) {
+            where.listingType = listingType;
+        }
+
+        if (rentUnit) {
+            where.rentUnit = rentUnit;
+        }
+
+        if (minPrice !== undefined || maxPrice !== undefined) {
+            where.price = {};
+            if (minPrice !== undefined) where.price.gte = minPrice;
+            if (maxPrice !== undefined) where.price.lte = maxPrice;
+        }
+
+        if (search) {
+            where.OR = [
+                { brand: { contains: search, mode: 'insensitive' } },
+                { model: { contains: search, mode: 'insensitive' } },
+                { category: { contains: search, mode: 'insensitive' } },
+            ];
+        }
 
         return this.prisma.machine.findMany({
-            where: {
-                category,
-                listingType,
-                price: {
-                    gte: minPrice,
-                    lte: maxPrice,
-                },
-                status: 'AVAILABLE',
-            },
+            where,
             include: {
                 owner: {
                     select: {
@@ -46,8 +72,27 @@ export class MachinesService {
         return this.prisma.machine.findUnique({
             where: { id },
             include: {
-                owner: true,
+                owner: {
+                    select: {
+                        id: true,
+                        name: true,
+                        phoneNumber: true,
+                        locationLat: true,
+                        locationLng: true,
+                        createdAt: true,
+                    },
+                },
             },
         });
+    }
+
+    async getCategories() {
+        const categories = await this.prisma.machine.findMany({
+            select: {
+                category: true,
+            },
+            distinct: ['category'],
+        });
+        return categories.map((c) => c.category);
     }
 }

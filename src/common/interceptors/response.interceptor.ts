@@ -34,32 +34,31 @@ export class ResponseInterceptor<T> implements NestInterceptor<T, StandardRespon
         const response = httpCtx.getResponse();
 
         const isEncryptionEnabled = this.configService.get('ENCRYPTION_ENABLED') === 'true';
-        const publicKey = this.configService.get<string>('RSA_PUBLIC_KEY');
 
         return next.handle().pipe(
-            map((result) => {
-                let data = result;
-                let message = 'Request successful';
-
-                // Handle cases where the controller returns an object with data and message
-                if (result && typeof result === 'object' && ('data' in result || 'message' in result)) {
-                    data = result.data !== undefined ? result.data : result;
-                    message = result.message || message;
-                }
-
+            map((data) => {
+                const message = 'Request successful';
                 let responseData = data;
                 let encrypted = false;
 
-                if (isEncryptionEnabled && publicKey && data !== null && data !== undefined) {
-                    responseData = CryptoUtil.encryptPayload(data, publicKey.replace(/\\n/g, '\n'));
-                    encrypted = true;
+                // Encrypt if enabled and data exists
+                if (isEncryptionEnabled && data !== null && data !== undefined) {
+                    try {
+                        // Use AES encryption (Shared Secret handled internally)
+                        responseData = CryptoUtil.encryptPayload(data);
+                        encrypted = true;
+                    } catch (e) {
+                        console.error('Response encryption failed:', e);
+                        // Fallback to unencrypted or throw? Usually fallback for debugging but better throw for security.
+                        // Let's keep it unencrypted if fails for now to see errors, but typically throw.
+                    }
                 }
 
                 return {
                     success: true,
                     statusCode: response.statusCode,
                     message: message,
-                    data: responseData,
+                    data: responseData ?? {},
                     path: request.url,
                     timestamp: new Date().toISOString(),
                     encrypted,

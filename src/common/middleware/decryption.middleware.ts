@@ -14,15 +14,12 @@ export class DecryptionMiddleware implements NestMiddleware {
 
         if (isEncrypted && hasBody && typeof req.body.payload === 'string') {
             try {
-                const privateKey = this.configService.get<string>('RSA_PRIVATE_KEY');
-                if (!privateKey) {
-                    throw new Error('Server RSA Private Key not configured');
-                }
-
-                const decryptedBody = CryptoUtil.decryptPayload(req.body.payload, privateKey.replace(/\\n/g, '\n'));
+                // AES Decryption (No RSA keys needed here, CryptoUtil uses the shared secret)
+                const decryptedBody = CryptoUtil.decryptPayload(req.body.payload);
                 req.body = decryptedBody;
             } catch (error) {
-                throw new BadRequestException('Invalid encrypted payload');
+                console.error('Decryption Error Detail:', error);
+                throw new BadRequestException(`Invalid encrypted payload: ${error.message}`);
             }
         } else if (this.configService.get('ENCRYPTION_REQUIRED') === 'true' && !isEncrypted && hasBody) {
             // Option to enforce encryption in production

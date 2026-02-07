@@ -5,30 +5,32 @@ export class CryptoUtil {
     private static readonly IV_LENGTH = 16;
     private static readonly AUTH_TAG_LENGTH = 16;
 
+    private static get SHARED_SECRET_KEY(): string {
+        return process.env.AES_SECRET_KEY || 'KrushimitraSuperSecretKey2026!@#';
+    }
+
     /**
-     * Decrypts a hybrid encrypted payload (RSA + AES)
-     * Format: base64(rsa_encrypted_aes_key:iv:auth_tag:aes_encrypted_data)
+     * Decrypts an AES-256-GCM encrypted payload
+     * Format: base64(iv:auth_tag:encrypted_data)
      */
-    static decryptPayload(encryptedPayload: string, privateKey: string): any {
+    static decryptPayload(encryptedPayload: string, _unusedKey?: string): any {
         try {
-            const buffer = Buffer.from(encryptedPayload, 'base64');
+            const cleanedPayload = encryptedPayload.replace(/\s/g, '');
+            const buffer = Buffer.from(cleanedPayload, 'base64');
             const payloadString = buffer.toString('utf8');
-            const [encryptedKey, ivHex, authTagHex, encryptedData] = payloadString.split(':');
+            const [ivHex, authTagHex, encryptedData] = payloadString.split(':');
 
-            // 1. Decrypt AES Key using RSA Private Key
-            const aesKey = crypto.privateDecrypt(
-                {
-                    key: privateKey,
-                    padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-                    oaepHash: 'sha256',
-                },
-                Buffer.from(encryptedKey, 'base64'),
-            );
+            if (!ivHex || !authTagHex || !encryptedData) {
+                throw new Error('Malformed encrypted payload structure');
+            }
 
-            // 2. Decrypt Data using AES Key
+            // Prepare Key (Simple SHA-256 hash of secret) - Matches Frontend
+            const key = crypto.createHash('sha256').update(this.SHARED_SECRET_KEY, 'utf8').digest();
+
+            // Decrypt Data using AES-GCM
             const iv = Buffer.from(ivHex, 'hex');
             const authTag = Buffer.from(authTagHex, 'hex');
-            const decipher = crypto.createDecipheriv(this.ALGORITHM, aesKey, iv);
+            const decipher = crypto.createDecipheriv(this.ALGORITHM, key, iv);
             decipher.setAuthTag(authTag);
 
             let decrypted = decipher.update(encryptedData, 'base64', 'utf8');
@@ -37,39 +39,30 @@ export class CryptoUtil {
             return JSON.parse(decrypted);
         } catch (error) {
             console.error('Decryption failed:', error.message);
-            throw new Error('Invalid encrypted payload');
+            throw new Error(`Decryption failed: ${error.message}`);
         }
     }
 
     /**
-     * Encrypts a payload using hybrid encryption (RSA + AES)
-     * Use Client's Public Key for true security, but for now we'll use a configurable key.
+     * Encrypts a payload using AES-256-GCM
+     * Format: base64(iv:auth_tag:encrypted_data)
      */
-    static encryptPayload(data: any, publicKey: string): string {
+    static encryptPayload(data: any, _unusedKey?: string): string {
         try {
             const jsonData = JSON.stringify(data);
-            const aesKey = crypto.randomBytes(32);
+
+            // Prepare Key (Simple SHA-256 hash of secret)
+            const key = crypto.createHash('sha256').update(this.SHARED_SECRET_KEY, 'utf8').digest();
             const iv = crypto.randomBytes(this.IV_LENGTH);
 
-            // 1. Encrypt Data using AES
-            const cipher = crypto.createCipheriv(this.ALGORITHM, aesKey, iv);
+            // Encrypt Data using AES-GCM
+            const cipher = crypto.createCipheriv(this.ALGORITHM, key, iv);
             let encrypted = cipher.update(jsonData, 'utf8', 'base64');
             encrypted += cipher.final('base64');
             const authTag = cipher.getAuthTag();
 
-            // 2. Encrypt AES Key using RSA Public Key
-            const encryptedKey = crypto.publicEncrypt(
-                {
-                    key: publicKey,
-                    padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-                    oaepHash: 'sha256',
-                },
-                aesKey,
-            );
-
-            // 3. Construct Final Payload
+            // Construct Final Payload: iv:auth_tag:encrypted_data
             const finalPayload = [
-                encryptedKey.toString('base64'),
                 iv.toString('hex'),
                 authTag.toString('hex'),
                 encrypted,
