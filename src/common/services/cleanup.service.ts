@@ -14,20 +14,20 @@ export class CleanupService {
         try {
             this.logger.log('Starting cleanup of incomplete GUEST registrations...');
 
-            // Delete GUEST users who haven't upgraded their role in 7 days
+            // Delete unverified users who haven't upgraded their role in 7 days
             const sevenDaysAgo = new Date();
             sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
             const result = await this.prisma.user.deleteMany({
                 where: {
-                    role: 'GUEST',
+                    isVerified: false, // Changed from role: 'GUEST'
                     createdAt: {
                         lt: sevenDaysAgo
                     }
                 }
             });
 
-            this.logger.log(`Cleaned up ${result.count} incomplete GUEST registrations`);
+            this.logger.log(`Cleaned up ${result.count} incomplete registrations`);
             return result;
         } catch (error) {
             this.logger.error('Failed to cleanup incomplete registrations', error);

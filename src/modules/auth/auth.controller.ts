@@ -22,6 +22,13 @@ export class AuthController {
     }
 
     @UseGuards(JwtAuthGuard)
+    @Post('logout')
+    @HttpCode(HttpStatus.OK)
+    async logout(@GetUser('id') userId: string) {
+        return this.authService.logout(userId);
+    }
+
+    @UseGuards(JwtAuthGuard)
     @Patch('profile')
     async updateProfile(
         @GetUser('id') userId: string,

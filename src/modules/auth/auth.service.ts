@@ -77,7 +77,7 @@ export class AuthService {
             consentTimestamp: new Date(),
         };
 
-        const normalizedRole = (role ? role.toUpperCase() : 'GUEST') as 'FARMER' | 'LABOUR' | 'TRANSPORTER' | 'GUEST';
+        const normalizedRole = (role ? role.toUpperCase() : 'FARMER') as 'FARMER' | 'LABOUR' | 'TRANSPORTER';
 
         if (!user) {
             user = await this.prisma.user.create({
@@ -136,11 +136,15 @@ export class AuthService {
         const payload = { sub: user.id, phoneNumber: user.phoneNumber, role: user.role };
         const token = this.jwtService.sign(payload);
 
+        // 6. Store Session in Redis (Whitelist approach)
+        // Key: session:userId, Value: token (or 'valid'), Expiry: 7 days (604800s) matches JWT constant likely
+        await this.redis.set(`session:${user.id}`, token, 604800);
+
         return {
             message: 'Verification successful',
             user,
             token,
-            needsProfileSetup: user.role === 'GUEST',
+            needsProfileSetup: user.name ? false : true,
         };
     }
 
@@ -165,5 +169,11 @@ export class AuthService {
                 locationAddress: true,
             },
         });
+    }
+
+    async logout(userId: string) {
+        // Remove session from Redis
+        await this.redis.del(`session:${userId}`);
+        return { success: true, message: 'Logged out successfully' };
     }
 }
