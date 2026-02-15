@@ -39,6 +39,13 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
         connection: {
           host: configService.get('REDIS_HOST'),
           port: configService.get('REDIS_PORT'),
+          password: configService.get('REDIS_PASSWORD'),
+          // Upstash requires TLS. We'll enable it if the host isn't localhost
+          ...(configService.get('REDIS_HOST') !== 'localhost' && {
+            tls: {
+              servername: configService.get('REDIS_HOST'),
+            },
+          }),
         },
       }),
       inject: [ConfigService],
