@@ -10,14 +10,18 @@ export class RedisService implements OnModuleDestroy {
         const host = this.configService.get<string>('REDIS_HOST', 'localhost');
         const port = this.configService.get<number>('REDIS_PORT', 6379);
         const password = this.configService.get<string>('REDIS_PASSWORD');
-        const tlsEnabled = this.configService.get<string>('REDIS_TLS') === 'true';
+
+        // Auto-enable TLS for Upstash/Production
+        const isRemote = host !== 'localhost';
+        const tlsOptions = isRemote ? { servername: host } : undefined;
 
         this.client = new Redis({
             host,
             port,
             password,
-            tls: tlsEnabled ? {} : undefined,
+            tls: tlsOptions,
             retryStrategy: (times) => Math.min(times * 50, 2000),
+            maxRetriesPerRequest: null, // Recommended for BullMQ co-existence although this is separate client
         });
     }
 
