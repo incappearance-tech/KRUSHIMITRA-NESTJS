@@ -1,4 +1,6 @@
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ValidationPipe, Logger, ClassSerializerInterceptor } from '@nestjs/common';
+
 import { NestFactory, Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
@@ -38,6 +40,7 @@ async function bootstrap() {
   // Set global API prefix
   app.setGlobalPrefix('api/v1');
 
+
   // Global validation pipe for all requests
   app.useGlobalPipes(
     new ValidationPipe({
@@ -46,6 +49,16 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  // 5. Swagger API Documentation
+  const config = new DocumentBuilder()
+    .setTitle('KrushiMitra API')
+    .setDescription('The KrushiMitra Mobile API description')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api-docs', app, document);
 
   // Enable CORS for mobile app access
   app.enableCors();
