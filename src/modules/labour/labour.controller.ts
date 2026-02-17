@@ -3,9 +3,12 @@ import { LabourService } from './labour.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
 import { CreateLabourProfileDto } from './dto/labour-profile.dto';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 
+@ApiTags('Labour')
 @Controller('labour')
 @UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
 export class LabourController {
     constructor(private readonly labourService: LabourService) { }
 

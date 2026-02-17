@@ -5,9 +5,12 @@ import { GetUser } from '../../common/decorators/get-user.decorator';
 import { CreateTransporterProfileDto } from './dto/transporter-profile.dto';
 import { CreateVehicleDto } from './dto/vehicle.dto';
 import { CreateTripDto } from './dto/create-trip.dto';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 
+@ApiTags('Transporter')
 @Controller('transporter')
 @UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
 export class TransporterController {
     constructor(private readonly transporterService: TransporterService) { }
 

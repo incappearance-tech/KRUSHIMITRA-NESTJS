@@ -4,7 +4,9 @@ import { CreateMachineDto, MachineFilterDto } from './dto/machine.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
 import type { User } from '@prisma/client';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 
+@ApiTags('Machines')
 @Controller('machines')
 export class MachinesController {
     constructor(private readonly machinesService: MachinesService) { }
