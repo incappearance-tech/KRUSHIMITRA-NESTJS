@@ -56,12 +56,19 @@ async function bootstrap() {
     .setDescription('The KrushiMitra Mobile API description')
     .setVersion('1.0')
     .addBearerAuth()
+    .addServer('http://localhost:3000', 'Local Environment')
+    .addServer('https://krushimitra-api.onrender.com', 'Production Environment')
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api-docs', app, document);
 
   // Enable CORS for mobile app access
-  app.enableCors();
+  app.enableCors({
+    origin: '*', // Allow all origins for mobile app development
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+  });
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
