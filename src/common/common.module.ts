@@ -3,8 +3,8 @@ import { CleanupService } from './services/cleanup.service';
 import { PrismaModule } from '../database/prisma/prisma.module';
 
 @Module({
-    imports: [PrismaModule],
-    providers: [CleanupService],
-    exports: [CleanupService],
+  imports: [PrismaModule],
+  providers: [CleanupService],
+  exports: [CleanupService],
 })
-export class CommonModule { }
+export class CommonModule {}

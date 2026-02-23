@@ -23,6 +23,30 @@ enum ListingType {
   RENT
 }
 
+enum AvailabilityState {
+  AVAILABLE
+  BUSY
+  MAINTENANCE
+  DRIVER_UNAVAILABLE
+}
+
+enum TransportRequestStatus {
+  SENT
+  ACCEPTED
+  REJECTED
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+  CALL_LOG
+}
+
 enum ListingStatus {
   AVAILABLE
   SOLD
@@ -33,10 +57,16 @@ model User {
   id                String      @id @default(uuid())
   phoneNumber       String      @unique
   name              String?
+  farmerId          String?     // Custom ID enterable by user
   role              UserRole    @default(GUEST)
   locationLat       Float?
   locationLng       Float?
-  locationAddress   String?     // Added for formatted address
+  locationAddress   String?     // Formatted address (legacy/fallback)
+  state             String?
+  district          String?
+  taluka            String?
+  village           String?
+  pincode           String?
   preferredLanguage String      @default("en")
   isVerified        Boolean     @default(false)
   fcmToken          String?     // For mobile push notifications
@@ -53,13 +83,19 @@ model User {
   // Relations
   listings          Machine[]
   ordersAsBuyer     Order[]     @relation("BuyerOrders")
+  transportRequests TransportRequest[] @relation("FarmerRequests")
   ordersAsSeller    Order[]     @relation("SellerOrders")
   auditLogs         AuditLog[]
+  payments          Payment[]
+  callsOutgoing     CallLog[]   @relation("CallerLogs")
+  callsIncoming     CallLog[]   @relation("ReceiverLogs")
+  notifications     Notification[]
   
   // Profile Relations
   labourProfile     LabourProfile?
   transporterProfile TransporterProfile?
   transportTrips    TransportTrip[]    @relation("FarmerTrips")
+  labourBookings    LabourBooking[]    @relation("FarmerBookings")
   
   // Performance Indexes (10x faster queries)
   @@index([role])                    // Fast role filtering
@@ -81,8 +117,12 @@ model LabourProfile {
   rating         Float    @default(0)
   jobsCompleted  Int      @default(0)
   callsReceived  Int      @default(0)
+  lat            Float?                     // GPS latitude for proximity search
+  lng            Float?                     // GPS longitude for proximity search
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  bookings       LabourBooking[] @relation("LabourBookings")
   
   // Performance Indexes
   @@index([isAvailable])           // Fast availability filtering
@@ -97,6 +137,8 @@ model TransporterProfile {
   businessName    String?
   operatingRadius Int       @default(50) // in km
   experience      String?
+  lat             Float?                    // GPS latitude for proximity search
+  lng             Float?                    // GPS longitude for proximity search
   vehicles        Vehicle[]
   trips           TransportTrip[]
   createdAt       DateTime  @default(now())
@@ -115,6 +157,7 @@ model TransportTrip {
   dropLocation    String
   loadType        String?
   vehicleType     String
+  weight          String?            // e.g., "2 Tons"
   date            DateTime
   status          String             @default("pending") // pending, accepted, rejected, completed
   createdAt       DateTime           @default(now())
@@ -130,28 +173,99 @@ model TransportTrip {
 }
 
 model Vehicle {
-  id           String             @id @default(uuid())
-  transporter  TransporterProfile @relation(fields: [transporterId], references: [id])
+  id            String             @id @default(uuid())
+  transporter   TransporterProfile @relation(fields: [transporterId], references: [id])
   transporterId String
-  type         String             // e.g., "Tractor", "Truck"
-  model        String
-  numberPlate  String?
-  capacity     String?            // e.g., "5 Tons"
-  ratePerKm    Decimal?           @db.Decimal(10, 2)
-  isAvailable  Boolean            @default(true)
-  images       String[]
-  
-  // Driver Info
+  type          String             // e.g., "Tractor", "Truck"
+  model         String
+  numberPlate   String?
+  capacity      String?            // e.g., "5 Tons"
+  ratePerKm     Decimal?           @db.Decimal(10, 2)
+  isAvailable   Boolean            @default(true)
+  images        String[]
+  operatingArea String?            // e.g., "Pune District, Nashik"
+  rating        Float              @default(0)
+  tripCount     Int                @default(0)
+
+  // Driver Info (embedded, kept for backward compat)
   driverName    String?
   driverPhone   String?
   driverLicense String?
-  
+
   // Subscription Plan
   plan          String?            // monthly, quarterly, yearly
   expiryDate    DateTime?
-  
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  // Relations
+  drivers       Driver[]
+  availability  VehicleAvailability[]
+  requests      TransportRequest[]
+
+  @@index([transporterId])
+  @@index([type])
+  @@index([isAvailable])
+}
+
+model Driver {
+  id          String   @id @default(uuid())
+  vehicle     Vehicle  @relation(fields: [vehicleId], references: [id])
+  vehicleId   String
+  name        String
+  mobile      String
+  license     String?
+  experience  String?
+  photo       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([vehicleId])
+}
+
+model VehicleAvailability {
+  id        String            @id @default(uuid())
+  vehicle   Vehicle           @relation(fields: [vehicleId], references: [id])
+  vehicleId String
+  date      DateTime          // The calendar date (time part ignored)
+  state     AvailabilityState @default(AVAILABLE)
+  note      String?           // Optional reason (e.g., "Maintenance", "Holiday")
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  @@unique([vehicleId, date])  // One state per vehicle per day
+  @@index([vehicleId])
+  @@index([date])
+  @@index([vehicleId, date])
+}
+
+model TransportRequest {
+  id            String                 @id @default(uuid())
+  farmer        User                   @relation("FarmerRequests", fields: [farmerId], references: [id])
+  farmerId      String
+  vehicle       Vehicle                @relation(fields: [vehicleId], references: [id])
+  vehicleId     String
+  transporterId String                 // Denormalized for fast queries
+  pickup        String
+  drop          String
+  crop          String?
+  quantity      String?                // e.g., "2 Tons"
+  requiredDate  DateTime
+  status        TransportRequestStatus @default(SENT)
+  rejectedAt    DateTime?              // For 24h cooldown
+  suggestedDate      DateTime?              // Transporter suggests alternate date
+  cancellationReason String?                // Why it was cancelled
+  cancelledById      String?                // Who cancelled it
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  @@index([farmerId])
+  @@index([vehicleId])
+  @@index([transporterId])
+  @@index([status])
+  @@index([farmerId, status])
+  @@index([transporterId, status])
 }
 
 model Machine {
@@ -167,6 +281,11 @@ model Machine {
   rentUnit       String?       // HOURLY, DAILY
   images         String[]
   status         ListingStatus @default(AVAILABLE)
+  negotiable     Boolean       @default(false)
+  plan           String?       // free, basic, pro
+  planExpiresAt  DateTime?
+  lat            Float?        // GPS latitude for proximity search
+  lng            Float?        // GPS longitude for proximity search
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   orders         Order[]
@@ -207,4 +326,73 @@ model AuditLog {
   ipAddress String?
   userAgent String?
   createdAt DateTime @default(now())
+}
+
+model LabourBooking {
+  id            String        @id @default(uuid())
+  farmer        User          @relation("FarmerBookings", fields: [farmerId], references: [id])
+  farmerId      String
+  labour        LabourProfile @relation("LabourBookings", fields: [labourId], references: [id])
+  labourId      String
+  taskType      String        // e.g., "Harvesting"
+  date          DateTime
+  numberOfDays  Int           @default(1)
+  location      String
+  workers       Int           @default(1)
+  status        String        @default("pending") // pending, accepted, rejected, completed
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([farmerId])
+  @@index([labourId])
+  @@index([status])
+}
+
+model Payment {
+  id                  String   @id @default(uuid())
+  user                User     @relation(fields: [userId], references: [id])
+  userId              String
+  type                String   // LISTING_FEE, CALL_FEE, SUBSCRIPTION
+  amount              Decimal  @db.Decimal(10, 2)
+  razorpayOrderId     String?
+  razorpayPaymentId   String?
+  status              String   @default("PENDING") // PENDING, PAID, FAILED
+  entityId            String?  // machineId / vehicleId etc.
+  createdAt           DateTime @default(now())
+
+  @@index([userId])
+  @@index([status])
+}
+
+model CallLog {
+  id               String   @id @default(uuid())
+  caller           User     @relation("CallerLogs", fields: [callerId], references: [id])
+  callerId         String
+  receiver         User     @relation("ReceiverLogs", fields: [receiverId], references: [id])
+  receiverId       String
+  bookingId        String?
+  bookingType      String?  // LABOUR, TRANSPORT, MACHINE
+  exotelCallId     String?
+  durationSeconds  Int      @default(0)
+  status           String   @default("initiated") // initiated, completed, failed
+  createdAt        DateTime @default(now())
+
+  @@index([callerId])
+  @@index([receiverId])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  user      User             @relation(fields: [userId], references: [id])
+  userId    String
+  title     String
+  message   String
+  type      NotificationType @default(INFO)
+  isRead    Boolean          @default(false)
+  link      String?          // Optional deep link or route path
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@index([userId, isRead])
+  @@index([createdAt])
 }

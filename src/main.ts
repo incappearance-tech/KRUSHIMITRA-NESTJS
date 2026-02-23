@@ -1,10 +1,15 @@
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { ValidationPipe, Logger, ClassSerializerInterceptor } from '@nestjs/common';
+import {
+  ValidationPipe,
+  Logger,
+  ClassSerializerInterceptor,
+} from '@nestjs/common';
 
 import { NestFactory, Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import compression from 'compression';
+import { json } from 'express';
 
 import { AppModule } from './app.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
@@ -14,21 +19,34 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
 
+  // Preserve raw body for Razorpay webhook verification
+  app.use(
+    json({
+      verify: (req: any, res, buf) => {
+        if (req.url.includes('/payments/webhook')) {
+          req.rawBody = buf.toString();
+        }
+      },
+    }),
+  );
+
   const configService = app.get(ConfigService);
 
   // 1. Global Security Headers (Helmet)
   app.use(helmet());
 
   // 2. Response Compression (Reduces payload size by ~70%)
-  app.use(compression({
-    filter: (req: any, res: any) => {
-      if (req.headers['x-no-compression']) {
-        return false;
-      }
-      return compression.filter(req, res);
-    },
-    level: 6, // Balance between speed and compression
-  }));
+  app.use(
+    compression({
+      filter: (req: any, res: any) => {
+        if (req.headers['x-no-compression']) {
+          return false;
+        }
+        return compression.filter(req, res);
+      },
+      level: 6, // Balance between speed and compression
+    }),
+  );
 
   // 3. Global Serialization (Prunes @Exclude properties)
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
@@ -39,7 +57,6 @@ async function bootstrap() {
 
   // Set global API prefix
   app.setGlobalPrefix('api/v1');
-
 
   // Global validation pipe for all requests
   app.useGlobalPipes(
@@ -71,8 +88,10 @@ async function bootstrap() {
   });
 
   const port = process.env.PORT || 3000;
-  await app.listen(port);
-  logger.log(`🚀 Krushimitra Mobile API running on: http://localhost:${port}/api/v1`);
+  await app.listen(port, '0.0.0.0');
+  logger.log(
+    `🚀 Krushimitra Mobile API running on: http://0.0.0.0:${port}/api/v1`,
+  );
   logger.log(`📱 Optimized for Android & iOS`);
   logger.log(`⚡ Compression enabled - 70% smaller responses`);
 }

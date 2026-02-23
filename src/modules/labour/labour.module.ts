@@ -3,7 +3,7 @@ import { LabourController } from './labour.controller';
 import { LabourService } from './labour.service';
 
 @Module({
-    controllers: [LabourController],
-    providers: [LabourService],
+  controllers: [LabourController],
+  providers: [LabourService],
 })
-export class LabourModule { }
+export class LabourModule {}

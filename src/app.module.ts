@@ -14,6 +14,9 @@ import { CommonModule } from './common/common.module';
 import { MachinesModule } from './modules/machines/machines.module';
 import { LabourModule } from './modules/labour/labour.module';
 import { TransporterModule } from './modules/transporter/transporter.module';
+import { PaymentsModule } from './modules/payments/payments.module';
+import { CallsModule } from './modules/calls/calls.module';
+import { NotificationsModule } from './common/notifications/notifications.module';
 import { DecryptionMiddleware } from './common/middleware/decryption.middleware';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
 import { TimestampMiddleware } from './common/middleware/timestamp.middleware';
@@ -57,6 +60,9 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
     MachinesModule,
     LabourModule,
     TransporterModule,
+    PaymentsModule,
+    CallsModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [
@@ -75,10 +81,10 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(
-        LoggerMiddleware,        // Log all requests
-        TimestampMiddleware,     // Validate timestamp & nonce (anti-replay)
-        SignatureMiddleware,     // Verify HMAC signature FIRST (of Encrypted Payload) - Authenticate then Decrypt pattern
-        DecryptionMiddleware     // Then Decrypt payload
+        LoggerMiddleware, // Log all requests
+        TimestampMiddleware, // Validate timestamp & nonce (anti-replay)
+        SignatureMiddleware, // Verify HMAC signature FIRST (of Encrypted Payload) - Authenticate then Decrypt pattern
+        DecryptionMiddleware, // Then Decrypt payload
       )
       .forRoutes('*');
   }
