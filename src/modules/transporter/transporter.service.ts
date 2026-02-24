@@ -625,9 +625,34 @@ export class TransporterService {
     }));
   }
 
-  async getFarmerRequests(farmerId: string) {
+  async getFarmerRequests({
+    farmerId,
+    page = 1,
+    limit = 100,
+    statuses,
+  }: {
+    farmerId: string;
+    page?: number;
+    limit?: number;
+    statuses?: string[];
+  }) {
+    const skip = (page - 1) * limit;
+
+    const whereClause: any = { farmerId };
+
+    if (statuses && statuses.length > 0) {
+      const validStatuses = ['SENT', 'ACCEPTED', 'REJECTED', 'SCHEDULED', 'COMPLETED', 'CANCELLED'];
+      const filteredStatuses = statuses
+        .map(s => s.toUpperCase())
+        .filter(s => validStatuses.includes(s));
+
+      if (filteredStatuses.length > 0) {
+        whereClause.status = { in: filteredStatuses };
+      }
+    }
+
     const requests = await this.prisma.transportRequest.findMany({
-      where: { farmerId },
+      where: whereClause,
       include: {
         vehicle: {
           include: {
@@ -638,6 +663,8 @@ export class TransporterService {
         },
       },
       orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
     });
 
     return requests.map((req) => {

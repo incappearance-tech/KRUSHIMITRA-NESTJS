@@ -47,6 +47,12 @@ export class NotificationsService {
     });
   }
 
+  async deleteNotification(userId: string, notificationId: string) {
+    return this.prisma.notification.deleteMany({
+      where: { id: notificationId, userId },
+    });
+  }
+
   // Unified method to create a DB notification and optionally fire push push object
   async createNotification(data: {
     userId: string;

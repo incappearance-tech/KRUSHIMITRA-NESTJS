@@ -200,9 +200,23 @@ export class TransporterController {
   }
 
   @Get('requests/mine')
-  @ApiOperation({ summary: 'Farmer views their own requests' })
-  async getMyRequests(@GetUser('id') userId: string) {
-    return this.transporterService.getFarmerRequests(userId);
+  @ApiOperation({ summary: 'Farmer views their own requests with optional pagination and filtering' })
+  async getMyRequests(
+    @GetUser('id') userId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('statuses') statuses?: string,
+  ) {
+    const pageNumber = page ? parseInt(page, 10) : 1;
+    const limitNumber = limit ? parseInt(limit, 10) : 100;
+    const statusArray = statuses ? statuses.split(',').map(s => s.trim()) : undefined;
+
+    return this.transporterService.getFarmerRequests({
+      farmerId: userId,
+      page: pageNumber,
+      limit: limitNumber,
+      statuses: statusArray,
+    });
   }
 
   @Patch('requests/:id/respond')
