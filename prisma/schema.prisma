@@ -58,6 +58,7 @@ model User {
   phoneNumber       String      @unique
   name              String?
   farmerId          String?     // Custom ID enterable by user
+  profileImage      String?     // Avatar URL for all roles
   role              UserRole    @default(GUEST)
   locationLat       Float?
   locationLng       Float?

@@ -653,11 +653,34 @@ export class TransporterService {
 
     const requests = await this.prisma.transportRequest.findMany({
       where: whereClause,
-      include: {
+      select: {
+        id: true,
+        status: true,
+        pickup: true,
+        drop: true,
+        crop: true,
+        quantity: true,
+        requiredDate: true,
+        suggestedDate: true,
+        cancellationReason: true,
+        cancelledById: true,
+        createdAt: true,
+        updatedAt: true,
         vehicle: {
-          include: {
+          select: {
+            type: true,
+            model: true,
+            numberPlate: true,
             transporter: {
-              include: { user: { select: { name: true, phoneNumber: true } } },
+              select: {
+                id: true, // transporterId
+                user: {
+                  select: {
+                    name: true,
+                    phoneNumber: true,
+                  },
+                },
+              },
             },
           },
         },

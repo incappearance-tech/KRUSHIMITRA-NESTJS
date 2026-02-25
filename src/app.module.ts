@@ -4,6 +4,8 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { BullModule } from '@nestjs/bullmq';
 import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { CacheModule } from '@nestjs/cache-manager';
+import { redisStore } from 'cache-manager-redis-yet';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -22,7 +24,7 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
 import { TimestampMiddleware } from './common/middleware/timestamp.middleware';
 import { SignatureMiddleware } from './common/middleware/signature.middleware';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
-
+import { UploadModule } from './modules/upload/upload.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -30,10 +32,27 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
       envFilePath: '.env',
     }),
     ScheduleModule.forRoot(),
+    CacheModule.registerAsync({
+      isGlobal: true,
+      imports: [ConfigModule],
+      useFactory: async (configService: ConfigService) => {
+        const store = await redisStore({
+          socket: {
+            host: configService.get('REDIS_HOST'),
+            port: parseInt(configService.get('REDIS_PORT') || '6379'),
+            tls: configService.get('REDIS_HOST') !== 'localhost',
+          },
+          password: configService.get('REDIS_PASSWORD'),
+          ttl: 60 * 1000, // Default 60 seconds
+        });
+        return { store };
+      },
+      inject: [ConfigService],
+    }),
     ThrottlerModule.forRoot([
       {
-        ttl: 60000,
-        limit: 100, // 100 requests per minute per IP
+        ttl: 60000, // 1 minute
+        limit: 100, // 100 requests per minute
       },
     ]),
     BullModule.forRootAsync({
@@ -43,7 +62,6 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
           host: configService.get('REDIS_HOST'),
           port: configService.get('REDIS_PORT'),
           password: configService.get('REDIS_PASSWORD'),
-          // Upstash requires TLS. We'll enable it if the host isn't localhost
           ...(configService.get('REDIS_HOST') !== 'localhost' && {
             tls: {
               servername: configService.get('REDIS_HOST'),
@@ -63,6 +81,7 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
     PaymentsModule,
     CallsModule,
     NotificationsModule,
+    UploadModule,
   ],
   controllers: [AppController],
   providers: [

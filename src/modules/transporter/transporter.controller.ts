@@ -8,7 +8,9 @@ import {
   Param,
   Patch,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
+import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
 import { TransporterService } from './transporter.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
@@ -118,6 +120,8 @@ export class TransporterController {
   // ───── VEHICLE AVAILABILITY CALENDAR ────────────────────────
 
   @Get('vehicles/:id/availability')
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(30000)
   @ApiOperation({
     summary:
       'Get vehicle availability calendar (optionally filter by month=YYYY-MM)',
@@ -146,6 +150,8 @@ export class TransporterController {
   // ───── FARMER-FACING VEHICLE BROWSE ─────────────────────────
 
   @Get('vehicles/browse')
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(30000)
   @ApiOperation({
     summary: 'Browse verified vehicles (farmer-facing, privacy-safe)',
   })

@@ -29,7 +29,7 @@ import {
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(private readonly authService: AuthService) { }
 
   @Post('otp/request')
   @ApiOperation({ summary: 'Request OTP for login/signup' })
@@ -75,10 +75,11 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get current user profile' })
   @ApiResponse({ status: 200, description: 'Returns user profile' })
-  async getMe(@GetUser() user: any) {
+  async getMe(@GetUser('id') userId: string) {
+    const liveUser = await this.authService.getProfileById(userId);
     return {
-      user,
-      needsProfileSetup: !(await this.authService.isProfileComplete(user)),
+      user: liveUser,
+      needsProfileSetup: !(await this.authService.isProfileComplete(liveUser as any)),
     };
   }
 

@@ -7,7 +7,9 @@ import {
   Param,
   Query,
   Patch,
+  UseInterceptors,
 } from '@nestjs/common';
+import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
 import { LabourService } from './labour.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
@@ -31,21 +33,26 @@ export class LabourController {
   constructor(private readonly labourService: LabourService) { }
 
   @Get('types')
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(86400000) // 24 hours
   async getTypes() {
     return this.labourService.getTypes();
   }
 
   @Get('leads')
+  @UseGuards(JwtAuthGuard)
   async getLeads(@GetUser('id') userId: string) {
     return this.labourService.getLeads(userId);
   }
 
   @Get('profile')
+  @UseGuards(JwtAuthGuard)
   async getProfile(@GetUser('id') userId: string) {
     return this.labourService.getProfile(userId);
   }
 
   @Post('profile')
+  @UseGuards(JwtAuthGuard)
   async updateProfile(
     @GetUser('id') userId: string,
     @Body() dto: CreateLabourProfileDto,
@@ -56,6 +63,8 @@ export class LabourController {
   @Get('all')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(30000) // 30 seconds
   async findAll(
     @Query('lat') lat?: string,
     @Query('lng') lng?: string,
@@ -85,6 +94,7 @@ export class LabourController {
     });
   }
   @Post('book')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Farmer books a labourer' })
   async createBooking(
     @GetUser('id') userId: string,
@@ -94,12 +104,14 @@ export class LabourController {
   }
 
   @Get('my-bookings')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Farmer views their labour booking history' })
   async getMyBookings(@GetUser('id') userId: string) {
     return this.labourService.getMyBookings(userId);
   }
 
   @Patch('leads/:id/status')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Labourer accepts or rejects a booking' })
   async updateBookingStatus(
     @GetUser('id') userId: string,

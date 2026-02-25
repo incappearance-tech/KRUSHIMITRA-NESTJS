@@ -8,7 +8,9 @@ import {
   UseGuards,
   Patch,
   Delete,
+  UseInterceptors,
 } from '@nestjs/common';
+import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
 import { MachinesService } from './machines.service';
 import { CreateMachineDto, MachineFilterDto } from './dto/machine.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -19,7 +21,7 @@ import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 @ApiTags('Machines')
 @Controller('machines')
 export class MachinesController {
-  constructor(private readonly machinesService: MachinesService) {}
+  constructor(private readonly machinesService: MachinesService) { }
 
   @UseGuards(JwtAuthGuard)
   @Post()
@@ -31,6 +33,8 @@ export class MachinesController {
   }
 
   @Get()
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(30000) // Cache for 30 seconds
   async findAll(@Query() filters: MachineFilterDto) {
     return this.machinesService.findAll(filters);
   }
@@ -41,6 +45,8 @@ export class MachinesController {
   }
 
   @Get('categories')
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(86400000) // Cache categories for 24 hours (rarely change)
   async getCategories() {
     return this.machinesService.getCategories();
   }

@@ -96,6 +96,13 @@ export class UpdateProfileDto {
   @IsString()
   name?: string;
 
+  @ApiPropertyOptional({
+    description: 'Optimized avatar image URL from Supabase',
+  })
+  @IsOptional()
+  @IsString()
+  profileImage?: string;
+
   @ApiPropertyOptional({ enum: UserRole, description: 'User role' })
   @IsOptional()
   @IsEnum(UserRole)
