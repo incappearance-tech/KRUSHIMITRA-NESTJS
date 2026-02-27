@@ -29,8 +29,8 @@ export class TimestampMiddleware implements NestMiddleware {
       return next();
     }
 
-    // Skip timestamp validation for GET requests and health checks
-    if (req.method === 'GET' || req.path.includes('/health')) {
+    // Skip timestamp validation for GET requests, health checks, and Razorpay webhook
+    if (req.method === 'GET' || req.path.includes('/health') || req.path.includes('/payments/webhook')) {
       return next();
     }
 

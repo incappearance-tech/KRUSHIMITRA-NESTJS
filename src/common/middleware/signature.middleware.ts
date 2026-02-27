@@ -25,8 +25,13 @@ export class SignatureMiddleware implements NestMiddleware {
       return next();
     }
 
-    // Skip for GET requests, health checks, and multipart uploads (which are hard to sign)
-    if (req.method === 'GET' || req.originalUrl.includes('/health') || req.originalUrl.includes('/upload')) {
+    // Skip for GET requests, health checks, uploads, and Razorpay webhook
+    if (
+      req.method === 'GET' ||
+      req.originalUrl.includes('/health') ||
+      req.originalUrl.includes('/upload') ||
+      req.originalUrl.includes('/payments/webhook')
+    ) {
       return next();
     }
 

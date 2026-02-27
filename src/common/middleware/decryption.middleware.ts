@@ -9,12 +9,17 @@ import { CryptoUtil } from '../utils/crypto.util';
 
 @Injectable()
 export class DecryptionMiddleware implements NestMiddleware {
-  constructor(private configService: ConfigService) {}
+  constructor(private configService: ConfigService) { }
 
   use(req: Request, res: Response, next: NextFunction) {
     // Only decrypt if body is present and it's a POST/PUT/PATCH request
     const isEncrypted = req.headers['x-encrypted'] === 'true';
     const hasBody = req.body && Object.keys(req.body).length > 0;
+    const isWebhook = req.originalUrl.includes('/payments/webhook');
+
+    if (isWebhook) {
+      return next();
+    }
 
     if (isEncrypted && hasBody && typeof req.body.payload === 'string') {
       try {
