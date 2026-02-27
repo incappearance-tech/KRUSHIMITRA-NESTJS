@@ -25,8 +25,8 @@ export class SignatureMiddleware implements NestMiddleware {
       return next();
     }
 
-    // Skip for GET requests and health checks
-    if (req.method === 'GET' || req.originalUrl.includes('/health')) {
+    // Skip for GET requests, health checks, and multipart uploads (which are hard to sign)
+    if (req.method === 'GET' || req.originalUrl.includes('/health') || req.originalUrl.includes('/upload')) {
       return next();
     }
 
@@ -107,7 +107,7 @@ Paths Tried: ${JSON.stringify(pathsToTry)}
 `;
       try {
         fs.writeFileSync('debug_signature_error.txt', debugInfo);
-      } catch (e) {}
+      } catch (e) { }
 
       throw new UnauthorizedException('Invalid request signature');
     }

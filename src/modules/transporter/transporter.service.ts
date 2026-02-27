@@ -330,10 +330,16 @@ export class TransporterService {
              u."locationLat" as "transporterLat", u."locationLng" as "transporterLng",
              t."businessName",
              ${distanceSelect},
-             (SELECT COUNT(*) FROM "TransportRequest" WHERE "vehicleId" = v.id AND status = 'COMPLETED') as "tripCount"
+             COALESCE(tc.count, 0) as "tripCount"
       FROM "Vehicle" v
       JOIN "TransporterProfile" t ON v."transporterId" = t.id
       JOIN "User" u ON t."userId" = u.id
+      LEFT JOIN (
+        SELECT "vehicleId", COUNT(*) as count 
+        FROM "TransportRequest" 
+        WHERE status = 'COMPLETED' 
+        GROUP BY "vehicleId"
+      ) tc ON tc."vehicleId" = v.id
       ${whereClause}
       ${distanceOrder}
       LIMIT $${paramIndex++} OFFSET $${paramIndex++}

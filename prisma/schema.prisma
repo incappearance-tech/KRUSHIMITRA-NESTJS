@@ -397,3 +397,38 @@ model Notification {
   @@index([userId, isRead])
   @@index([createdAt])
 }
+
+model State {
+  id        String     @id @default(uuid())
+  name      String     @unique
+  districts District[]
+}
+
+model District {
+  id      String   @id @default(uuid())
+  name    String
+  state   State    @relation(fields: [stateId], references: [id])
+  stateId String
+  talukas Taluka[]
+  
+  @@unique([name, stateId])
+}
+
+model Taluka {
+  id         String     @id @default(uuid())
+  name       String
+  district   District   @relation(fields: [districtId], references: [id])
+  districtId String
+  villages   Village[]
+  
+  @@unique([name, districtId])
+}
+
+model Village {
+  id       String @id @default(uuid())
+  name     String
+  taluka   Taluka @relation(fields: [talukaId], references: [id])
+  talukaId String
+  
+  @@unique([name, talukaId])
+}

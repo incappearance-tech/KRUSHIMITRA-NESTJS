@@ -25,6 +25,7 @@ import { TimestampMiddleware } from './common/middleware/timestamp.middleware';
 import { SignatureMiddleware } from './common/middleware/signature.middleware';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { UploadModule } from './modules/upload/upload.module';
+import { LocationModule } from './modules/location/location.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -82,6 +83,7 @@ import { UploadModule } from './modules/upload/upload.module';
     CallsModule,
     NotificationsModule,
     UploadModule,
+    LocationModule,
   ],
   controllers: [AppController],
   providers: [
