@@ -15,6 +15,7 @@ import {
   VerifyOtpDto,
   UpdateProfileDto,
   UpdateLocationDto,
+  UpdatePhoneDto,
 } from './dto/auth.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
@@ -93,6 +94,18 @@ export class AuthController {
     @Body() dto: UpdateLocationDto,
   ) {
     return this.authService.updateLocation(userId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('phone/update')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Verify OTP and update phone number' })
+  @ApiResponse({ status: 200, description: 'Phone number updated successfully' })
+  async updatePhone(
+    @GetUser('id') userId: string,
+    @Body() updatePhoneDto: UpdatePhoneDto,
+  ) {
+    return this.authService.verifyPhoneUpdate(userId, updatePhoneDto);
   }
 
   @UseGuards(JwtAuthGuard)

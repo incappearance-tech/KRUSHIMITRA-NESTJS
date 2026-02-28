@@ -34,9 +34,14 @@ export class TransporterController {
   // ───── PROFILE ─────────────────────────────────────────────
 
   @Get('profile')
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(30) // Cache for 30 seconds - profile stats don't change instantly
   @ApiOperation({ summary: 'Get own transporter profile' })
-  async getProfile(@GetUser('id') userId: string) {
-    return this.transporterService.getProfile(userId);
+  async getProfile(
+    @GetUser('id') userId: string,
+    @Query('today') today?: string,
+  ) {
+    return this.transporterService.getProfile(userId, today);
   }
 
   @Post('profile')
@@ -121,7 +126,7 @@ export class TransporterController {
 
   @Get('vehicles/:id/availability')
   @UseInterceptors(CacheInterceptor)
-  @CacheTTL(30000)
+  @CacheTTL(300)
   @ApiOperation({
     summary:
       'Get vehicle availability calendar (optionally filter by month=YYYY-MM)',

@@ -42,10 +42,23 @@ import { LocationModule } from './modules/location/location.module';
             host: configService.get('REDIS_HOST'),
             port: parseInt(configService.get('REDIS_PORT') || '6379'),
             tls: configService.get('REDIS_HOST') !== 'localhost',
+            reconnectStrategy: (retries) => {
+              // Exponential backoff with a cap at 3 seconds
+              return Math.min(retries * 100, 3000);
+            },
+            keepAlive: 5000,
           },
           password: configService.get('REDIS_PASSWORD'),
-          ttl: 60 * 1000, // Default 60 seconds
+          ttl: 60 * 1000,
         });
+
+        // Prevention of unhandled 'error' events which crash the process
+        if (store.client) {
+          store.client.on('error', (err) => {
+            console.error('Redis Cache Client Error:', err);
+          });
+        }
+
         return { store };
       },
       inject: [ConfigService],
@@ -68,6 +81,13 @@ import { LocationModule } from './modules/location/location.module';
               servername: configService.get('REDIS_HOST'),
             },
           }),
+          maxRetriesPerRequest: null, // Critical for BullMQ
+          enableReadyCheck: false,
+          reconnectOnError: (err) => {
+            const targetError = 'READONLY';
+            if (err.message.includes(targetError)) return true;
+            return false;
+          },
         },
       }),
       inject: [ConfigService],

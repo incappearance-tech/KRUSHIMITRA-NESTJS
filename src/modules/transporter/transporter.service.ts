@@ -12,12 +12,16 @@ import { CreateTransportRequestDto } from './dto/create-transport-request.dto';
 import { RespondRequestDto } from './dto/respond-request.dto';
 import { SetAvailabilityDto } from './dto/vehicle-availability.dto';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
+import { Inject } from '@nestjs/common';
 
 @Injectable()
 export class TransporterService {
   constructor(
     private prisma: PrismaService,
-    private notifications: NotificationsService
+    private notifications: NotificationsService,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache,
   ) { }
 
   // ─────────────────────────────────────────────────────────────
@@ -25,16 +29,10 @@ export class TransporterService {
   // ─────────────────────────────────────────────────────────────
 
   async getLeads(userId: string) {
-    const profile = await this.prisma.transporterProfile.findUnique({
-      where: { userId },
+    return this.prisma.transportTrip.findMany({
+      where: { transporter: { user: { id: userId } } },
+      orderBy: { createdAt: 'desc' },
     });
-    if (!profile) return [];
-
-    const leads = await this.prisma.transportTrip.findMany({
-      where: { transporterId: profile.id },
-      orderBy: { date: 'desc' },
-    });
-    return leads;
   }
 
   async updateLeadStatus(userId: string, tripId: string, status: string) {
@@ -65,7 +63,8 @@ export class TransporterService {
   //  TRANSPORTER PROFILE
   // ─────────────────────────────────────────────────────────────
 
-  async getProfile(userId: string) {
+  async getProfile(userId: string, targetDate?: string) {
+    // 1. Fetch profile core data first
     const profile = await this.prisma.transporterProfile.findUnique({
       where: { userId },
       include: { user: true, vehicles: true },
@@ -77,22 +76,50 @@ export class TransporterService {
       return { user, profile: null };
     }
 
-    const leadsReceived = await this.prisma.transportTrip.count({
-      where: { transporterId: profile.id },
-    });
-    const tripsCompleted = await this.prisma.transportTrip.count({
-      where: { transporterId: profile.id, status: 'completed' },
+    // 2. Optimization: Parallelize independent database queries
+    // This significantly reduces the response time when a transporter has many vehicles/trips
+    const today = targetDate ? new Date(`${targetDate}T00:00:00.000Z`) : this.getISTToday();
+
+    const [leadsReceived, tripsCompleted, availabilities] = await Promise.all([
+      this.prisma.transportTrip.count({
+        where: { transporterId: profile.id },
+      }),
+      this.prisma.transportTrip.count({
+        where: { transporterId: profile.id, status: 'completed' },
+      }),
+      this.prisma.vehicleAvailability.findMany({
+        where: {
+          vehicleId: { in: profile.vehicles.map(v => v.id) },
+          date: today
+        }
+      })
+    ]);
+
+    const vehiclesWithState = profile.vehicles.map(v => {
+      const todayState = availabilities.find(a => a.vehicleId === v.id)?.state;
+      return {
+        ...v,
+        ratePerKm: v.ratePerKm ? Number(v.ratePerKm) : null,
+        availabilityState: todayState || (v.isAvailable ? 'AVAILABLE' : 'BUSY')
+      };
     });
 
     return {
       ...profile,
       leadsReceived,
       tripsCompleted,
-      vehicles: profile.vehicles.map(v => ({
-        ...v,
-        ratePerKm: v.ratePerKm ? Number(v.ratePerKm) : null
-      }))
+      vehicles: vehiclesWithState
     };
+  }
+
+  /**
+   * Helper to get today's date in IST (UTC+5:30) for consistent availability checks
+   */
+  private getISTToday(): Date {
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const today = new Date(new Date().getTime() + istOffset);
+    today.setUTCHours(0, 0, 0, 0);
+    return today;
   }
 
   async getTransporterById(id: string) {
@@ -322,6 +349,24 @@ export class TransporterService {
       distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 
+    let availJoin = '';
+    let availSelect = 'NULL as "availabilityState"';
+    if (filters.requiredDate) {
+      const date = new Date(filters.requiredDate);
+      date.setUTCHours(0, 0, 0, 0);
+      availJoin = `LEFT JOIN "VehicleAvailability" va ON va."vehicleId" = v.id AND va."date" = $${paramIndex++}`;
+      availSelect = 'va."state" as "availabilityState"';
+      params.push(date);
+    } else {
+      // Use IST for default search date
+      const istOffset = 5.5 * 60 * 60 * 1000;
+      const today = new Date(new Date().getTime() + istOffset);
+      today.setUTCHours(0, 0, 0, 0);
+      availJoin = `LEFT JOIN "VehicleAvailability" va ON va."vehicleId" = v.id AND va."date" = $${paramIndex++}`;
+      availSelect = 'va."state" as "availabilityState"';
+      params.push(today);
+    }
+
     const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     const sql = `
@@ -330,10 +375,12 @@ export class TransporterService {
              u."locationLat" as "transporterLat", u."locationLng" as "transporterLng",
              t."businessName",
              ${distanceSelect},
+             ${availSelect},
              COALESCE(tc.count, 0) as "tripCount"
       FROM "Vehicle" v
       JOIN "TransporterProfile" t ON v."transporterId" = t.id
       JOIN "User" u ON t."userId" = u.id
+      ${availJoin}
       LEFT JOIN (
         SELECT "vehicleId", COUNT(*) as count 
         FROM "TransportRequest" 
@@ -375,7 +422,7 @@ export class TransporterService {
         tripCount: Number(v.tripCount) || 0,
         expiryDate: v.expiryDate,
         images: v.images,
-        availabilityState: 'AVAILABLE',
+        availabilityState: v.availabilityState || (v.isAvailable ? 'AVAILABLE' : 'BUSY'),
         transporter: {
           id: v.transporterId,
           businessName: v.businessName,
@@ -463,15 +510,43 @@ export class TransporterService {
   async getVehicleAvailability(vehicleId: string, month?: string) {
     const where: any = { vehicleId };
     if (month) {
-      const start = new Date(`${month}-01`);
+      // Force UTC for consistency
+      const start = new Date(`${month}-01T00:00:00.000Z`);
       const end = new Date(start);
-      end.setMonth(end.getMonth() + 1);
+      end.setUTCMonth(end.getUTCMonth() + 1);
       where.date = { gte: start, lt: end };
     }
-    return this.prisma.vehicleAvailability.findMany({
-      where,
-      orderBy: { date: 'asc' },
-    });
+
+    // 1. Parallelize data fetch
+    const [results, vehicle] = await Promise.all([
+      this.prisma.vehicleAvailability.findMany({
+        where,
+        orderBy: { date: 'asc' },
+      }),
+      this.prisma.vehicle.findUnique({
+        where: { id: vehicleId },
+        select: { isAvailable: true }
+      })
+    ]);
+
+    // 2. Inject current day status if missing (for IST context)
+    const todayDate = this.getISTToday();
+    const hasToday = results.some(r => r.date.getTime() === todayDate.getTime());
+
+    if (!hasToday && vehicle && !vehicle.isAvailable) {
+      results.push({
+        id: 'temp-busy',
+        vehicleId,
+        date: todayDate,
+        state: 'BUSY' as any,
+        note: 'Globally Unavailable',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      results.sort((a, b) => a.date.getTime() - b.date.getTime());
+    }
+
+    return results;
   }
 
   async setVehicleAvailability(
@@ -479,26 +554,53 @@ export class TransporterService {
     vehicleId: string,
     dto: SetAvailabilityDto,
   ) {
-    // Verify vehicle belongs to transporter
-    const profile = await this.prisma.transporterProfile.findUnique({
-      where: { userId },
-    });
-    if (!profile) throw new NotFoundException('Transporter profile not found');
-
+    // 1. Optimized validation: Verify vehicle belongs to transporter in single query
     const vehicle = await this.prisma.vehicle.findFirst({
-      where: { id: vehicleId, transporterId: profile.id },
+      where: {
+        id: vehicleId,
+        transporter: { userId },
+      },
+      select: { id: true, transporterId: true }
     });
     if (!vehicle)
       throw new ForbiddenException('Vehicle not found or not yours');
 
-    const date = new Date(dto.date);
-    date.setHours(0, 0, 0, 0);
+    const date = new Date(`${dto.date}T00:00:00.000Z`);
+    date.setUTCHours(0, 0, 0, 0);
 
-    return this.prisma.vehicleAvailability.upsert({
+    const today = this.getISTToday();
+
+    // 2. Parallelize: Update global availability and Upsert specific date
+    const promises: Promise<any>[] = [];
+
+    if (date.getTime() === today.getTime()) {
+      promises.push(this.prisma.vehicle.update({
+        where: { id: vehicleId },
+        data: { isAvailable: dto.state === 'AVAILABLE' }
+      }));
+    }
+
+    promises.push(this.prisma.vehicleAvailability.upsert({
       where: { vehicleId_date: { vehicleId, date } },
       create: { vehicleId, date, state: dto.state as any, note: dto.note },
       update: { state: dto.state as any, note: dto.note },
-    });
+    }));
+
+    const results = await Promise.all(promises);
+
+    // 3. Proactive Cache Invalidation
+    try {
+      const profileKey = `/transporter/profile?userId=${userId}`;
+      await this.cacheManager.del(profileKey);
+
+      const monthPrefix = dto.date.substring(0, 7);
+      const calendarKey = `/transporter/vehicles/${vehicleId}/availability?month=${monthPrefix}`;
+      await this.cacheManager.del(calendarKey);
+    } catch (cacheErr) {
+      console.warn('Cache invalidation failed:', cacheErr);
+    }
+
+    return results[results.length - 1];
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -551,9 +653,24 @@ export class TransporterService {
       );
     }
 
+    // Check for existing active requests (prevent multiple "cards" for same vehicle)
+    const activeRequest = await this.prisma.transportRequest.findFirst({
+      where: {
+        farmerId,
+        vehicleId: dto.vehicleId,
+        status: { in: ['SENT', 'ACCEPTED', 'SCHEDULED'] },
+      },
+    });
+
+    if (activeRequest) {
+      throw new BadRequestException(
+        'You already have an active request for this vehicle. Update your existing trip instead.',
+      );
+    }
+
     // Check date availability
     const requiredDate = new Date(dto.requiredDate);
-    requiredDate.setHours(0, 0, 0, 0);
+    requiredDate.setUTCHours(0, 0, 0, 0);
 
     const dayAvail = await this.prisma.vehicleAvailability.findUnique({
       where: {
@@ -591,12 +708,12 @@ export class TransporterService {
     });
 
     if (transporterUser) {
-      this.notifications.createNotification({
+      await this.notifications.createNotification({
         userId: transporterUser.userId,
         title: 'New Transport Request',
         message: `${newReq.farmer.name || 'A farmer'} requested transport for ${newReq.requiredDate.toLocaleDateString()}`,
         type: 'INFO',
-        link: '/(transporter)/(tabs)'
+        link: '/(transporter)'
       });
     }
 
@@ -672,6 +789,7 @@ export class TransporterService {
         cancelledById: true,
         createdAt: true,
         updatedAt: true,
+        vehicleId: true,
         vehicle: {
           select: {
             type: true,
@@ -728,13 +846,19 @@ export class TransporterService {
     if (!request) throw new NotFoundException('Request not found');
     if (request.transporterId !== profile.id)
       throw new ForbiddenException('Not authorized');
-    if (request.status !== 'SENT')
-      throw new BadRequestException('Request is no longer pending');
+
+    // Graceful handling for redundant clicks or stale UI
+    if (request.status !== 'SENT') {
+      if (dto.action === 'accept' && request.status === 'SCHEDULED') return request;
+      if (dto.action === 'reject' && request.status === 'REJECTED') return request;
+
+      throw new BadRequestException('Request is no longer pending (already responded or cancelled)');
+    }
 
     if (dto.action === 'accept') {
       // Auto-block the date on the vehicle availability calendar
       const date = new Date(request.requiredDate);
-      date.setHours(0, 0, 0, 0);
+      date.setUTCHours(0, 0, 0, 0);
       await this.prisma.vehicleAvailability.upsert({
         where: { vehicleId_date: { vehicleId: request.vehicleId, date } },
         create: {
@@ -746,7 +870,7 @@ export class TransporterService {
         update: { state: 'BUSY', note: `Booked - Request ${requestId}` },
       });
 
-      this.notifications.createNotification({
+      await this.notifications.createNotification({
         userId: request.farmerId,
         title: 'Transport Request Accepted',
         message: `Your transport request has been accepted.`,
@@ -761,7 +885,7 @@ export class TransporterService {
     }
 
     if (dto.action === 'reject') {
-      this.notifications.createNotification({
+      await this.notifications.createNotification({
         userId: request.farmerId,
         title: 'Transport Request Rejected',
         message: `Your transport request was rejected.`,
@@ -781,7 +905,7 @@ export class TransporterService {
           'suggestedDate is required for suggest action',
         );
 
-      this.notifications.createNotification({
+      await this.notifications.createNotification({
         userId: request.farmerId,
         title: 'Alternate Date Suggested',
         message: `The transporter suggested ${new Date(dto.suggestedDate).toLocaleDateString()} instead. Tap to review.`,

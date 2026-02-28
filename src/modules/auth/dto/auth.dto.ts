@@ -124,7 +124,6 @@ export class UpdateProfileDto {
   @ApiPropertyOptional({ description: 'Device OS update' })
   @IsOptional()
   @IsString()
-  @IsOptional()
   deviceOS?: string;
 
   @ApiPropertyOptional({ description: 'Custom Farmer ID' })
@@ -214,4 +213,26 @@ export class UpdateLocationDto {
   @IsOptional()
   @IsString()
   pincode?: string;
+}
+
+export class UpdatePhoneDto {
+  @ApiProperty({
+    description: 'New phone number in E.164 format',
+    example: '+919876543210',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^\+?[1-9]\d{1,14}$/, {
+    message: 'newPhoneNumber must be a valid E.164 formatted number',
+  })
+  newPhoneNumber: string;
+
+  @ApiProperty({
+    description: '6-digit OTP received on the new phone number',
+    example: '123456',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @Length(6, 6, { message: 'OTP must be 6 digits' })
+  otp: string;
 }

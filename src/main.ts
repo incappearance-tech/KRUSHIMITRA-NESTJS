@@ -39,12 +39,16 @@ async function bootstrap() {
   app.use(
     compression({
       filter: (req: any, res: any) => {
+        // DON'T compress SSE - it causes buffering and breaks real-time delivery
+        if (req.headers['accept'] === 'text/event-stream' || req.originalUrl?.includes('/notifications/stream')) {
+          return false;
+        }
         if (req.headers['x-no-compression']) {
           return false;
         }
         return compression.filter(req, res);
       },
-      level: 6, // Balance between speed and compression
+      level: 6,
     }),
   );
 

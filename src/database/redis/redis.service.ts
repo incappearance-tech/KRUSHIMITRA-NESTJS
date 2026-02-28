@@ -24,7 +24,11 @@ export class RedisService implements OnModuleDestroy {
       password,
       tls: tlsOptions,
       retryStrategy: (times) => Math.min(times * 50, 2000),
-      maxRetriesPerRequest: null, // Recommended for BullMQ co-existence although this is separate client
+      maxRetriesPerRequest: null,
+    });
+
+    this.client.on('error', (err) => {
+      console.error('RedisService Error:', err);
     });
   }
 

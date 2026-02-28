@@ -26,7 +26,7 @@ export class ResponseInterceptor<T> implements NestInterceptor<
   T,
   StandardResponse<T>
 > {
-  constructor(private configService: ConfigService) {}
+  constructor(private configService: ConfigService) { }
 
   intercept(
     context: ExecutionContext,
@@ -35,6 +35,20 @@ export class ResponseInterceptor<T> implements NestInterceptor<
     const httpCtx = context.switchToHttp();
     const request = httpCtx.getRequest<Request>();
     const response = httpCtx.getResponse();
+
+    // Skip wrapping for SSE (Server-Sent Events)
+    // SSE requires a raw stream of data: lines, which our interceptor would break
+    const isStream =
+      response.getHeader('Content-Type') === 'text/event-stream' ||
+      request.url.includes('/notifications/stream') ||
+      request.headers['accept'] === 'text/event-stream';
+
+    if (isStream) {
+      if (!response.getHeader('Content-Type')) {
+        response.setHeader('Content-Type', 'text/event-stream');
+      }
+      return next.handle();
+    }
 
     const isEncryptionEnabled =
       this.configService.get('ENCRYPTION_ENABLED') === 'true';
