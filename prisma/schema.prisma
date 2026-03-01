@@ -340,6 +340,7 @@ model LabourBooking {
   numberOfDays  Int           @default(1)
   location      String
   workers       Int           @default(1)
+  description   String?       // Additional notes or shift info
   status        String        @default("pending") // pending, accepted, rejected, completed
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt

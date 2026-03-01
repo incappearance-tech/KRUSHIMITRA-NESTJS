@@ -51,6 +51,11 @@ export class CreateLabourBookingDto {
   @Min(1)
   @Type(() => Number)
   workers?: number;
+
+  @ApiPropertyOptional({ description: 'Additional notes or shift info', example: 'Full Day shift, need tools' })
+  @IsOptional()
+  @IsString()
+  description?: string;
 }
 
 export class UpdateBookingStatusDto {

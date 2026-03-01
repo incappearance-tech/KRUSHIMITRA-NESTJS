@@ -34,6 +34,14 @@ export class NotificationsService implements OnModuleInit {
     // Create a dedicated subscriber client (ioredis requires a separate client for blocking sub)
     this.subscriber = this.redisService.client.duplicate();
 
+    this.subscriber.on('error', (err: any) => {
+      if (err?.code === 'ECONNRESET') {
+        this.logger.warn('Redis Subscriber Connection Reset (ECONNRESET) - Reconnecting...');
+        return;
+      }
+      this.logger.error('Redis Subscriber Error:', err);
+    });
+
     this.subscriber.subscribe('notifications');
 
     this.subscriber.on('message', (channel, message) => {

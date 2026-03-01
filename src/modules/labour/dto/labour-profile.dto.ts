@@ -80,4 +80,4 @@ export class CreateLabourProfileDto {
   isAvailable?: boolean;
 }
 
-export class UpdateLabourProfileDto extends CreateLabourProfileDto {}
+export class UpdateLabourProfileDto extends CreateLabourProfileDto { }

@@ -48,4 +48,4 @@ export class CreateTransporterProfileDto {
   pincode?: string;
 }
 
-export class UpdateTransporterProfileDto extends CreateTransporterProfileDto {}
+export class UpdateTransporterProfileDto extends CreateTransporterProfileDto { }

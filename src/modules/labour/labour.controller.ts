@@ -8,6 +8,7 @@ import {
   Query,
   Patch,
   UseInterceptors,
+  Req,
 } from '@nestjs/common';
 import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
 import { LabourService } from './labour.service';
@@ -41,8 +42,14 @@ export class LabourController {
 
   @Get('leads')
   @UseGuards(JwtAuthGuard)
-  async getLeads(@GetUser('id') userId: string) {
-    return this.labourService.getLeads(userId);
+  getLeads(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 20;
+    return this.labourService.getLeads(req.user.id, pageNum, limitNum);
   }
 
   @Get('profile')
@@ -75,6 +82,9 @@ export class LabourController {
     @Query('skills') skills?: string,
     @Query('minRating') minRating?: string,
     @Query('maxPrice') maxPrice?: string,
+    @Query('pincode') pincode?: string,
+    @Query('district') district?: string,
+    @Query('taluka') taluka?: string,
   ) {
     let parsedSkills: string[] | undefined;
     if (skills) {
@@ -91,6 +101,9 @@ export class LabourController {
       skills: parsedSkills,
       minRating: minRating ? parseFloat(minRating) : undefined,
       maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+      pincode,
+      district,
+      taluka,
     });
   }
   @Post('book')

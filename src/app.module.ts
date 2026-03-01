@@ -46,7 +46,7 @@ import { LocationModule } from './modules/location/location.module';
               // Exponential backoff with a cap at 3 seconds
               return Math.min(retries * 100, 3000);
             },
-            keepAlive: 5000,
+            keepAlive: 10000,
           },
           password: configService.get('REDIS_PASSWORD'),
           ttl: 60 * 1000,
@@ -54,7 +54,11 @@ import { LocationModule } from './modules/location/location.module';
 
         // Prevention of unhandled 'error' events which crash the process
         if (store.client) {
-          store.client.on('error', (err) => {
+          store.client.on('error', (err: any) => {
+            if (err?.code === 'ECONNRESET') {
+              console.warn('Redis Cache Connection Reset (ECONNRESET) - Reconnecting...');
+              return;
+            }
             console.error('Redis Cache Client Error:', err);
           });
         }
@@ -83,6 +87,7 @@ import { LocationModule } from './modules/location/location.module';
           }),
           maxRetriesPerRequest: null, // Critical for BullMQ
           enableReadyCheck: false,
+          keepAlive: 10000,
           reconnectOnError: (err) => {
             const targetError = 'READONLY';
             if (err.message.includes(targetError)) return true;

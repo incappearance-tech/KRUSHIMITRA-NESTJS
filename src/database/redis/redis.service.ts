@@ -23,11 +23,28 @@ export class RedisService implements OnModuleDestroy {
       port,
       password,
       tls: tlsOptions,
-      retryStrategy: (times) => Math.min(times * 50, 2000),
+      retryStrategy: (times) => {
+        const delay = Math.min(times * 100, 3000);
+        return delay;
+      },
       maxRetriesPerRequest: null,
+      keepAlive: 10000, // Sends ping every 10 seconds to prevent ECONNRESET
+      reconnectOnError: (err) => {
+        const targetError = 'READONLY';
+        if (err.message.includes(targetError)) {
+          return true; // Reconnect when error is READONLY
+        }
+        return false;
+      },
+      connectTimeout: 10000,
     });
 
-    this.client.on('error', (err) => {
+    this.client.on('error', (err: any) => {
+      // Don't log ECONNRESET as a full error as it's common with serverless Redis
+      if (err?.code === 'ECONNRESET') {
+        console.warn('Redis Connection Reset (ECONNRESET) - ioredis will reconnect automatically.');
+        return;
+      }
       console.error('RedisService Error:', err);
     });
   }

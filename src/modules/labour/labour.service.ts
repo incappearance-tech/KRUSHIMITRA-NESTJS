@@ -38,18 +38,34 @@ export class LabourService {
     return this.LABOUR_TYPES;
   }
 
-  async getLeads(userId: string) {
+  async getLeads(userId: string, page: number = 1, limit: number = 20) {
     // Find labourer's profile
     const profile = await this.prisma.labourProfile.findUnique({
       where: { userId },
     });
-    if (!profile) return [];
+    if (!profile) return { data: [], total: 0, page, totalPages: 0 };
 
-    return this.prisma.labourBooking.findMany({
-      where: { labourId: profile.id, status: { not: 'completed' } },
-      include: { farmer: { select: { name: true, phoneNumber: true } } },
-      orderBy: { createdAt: 'desc' },
-    });
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.labourBooking.findMany({
+        where: { labourId: profile.id, status: { in: ['pending', 'accepted', 'completed'] } },
+        include: { farmer: { select: { name: true, phoneNumber: true } } },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.labourBooking.count({
+        where: { labourId: profile.id, status: { in: ['pending', 'accepted', 'completed'] } },
+      }),
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async createBooking(farmerId: string, dto: CreateLabourBookingDto) {
@@ -59,15 +75,55 @@ export class LabourService {
     });
     if (!labour) throw new NotFoundException('Labourer not found');
 
+    const requestedDate = new Date(dto.date);
+
+    // Check if the farmer is already busy on this date
+    const startOfDay = new Date(requestedDate);
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date(requestedDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
+
+    const existingFarmerBooking = await this.prisma.labourBooking.findFirst({
+      where: {
+        farmerId,
+        status: { in: ['accepted', 'pending'] },
+        date: {
+          gte: startOfDay,
+          lte: endOfDay,
+        }
+      }
+    });
+
+    if (existingFarmerBooking) {
+      throw new BadRequestException('You already have a booking for this date. Please select another date.');
+    }
+
+    // Check if the LABOURER is already busy on this date
+    const existingLabourBooking = await this.prisma.labourBooking.findFirst({
+      where: {
+        labourId: dto.labourId,
+        status: { in: ['accepted', 'pending'] },
+        date: {
+          gte: startOfDay,
+          lte: endOfDay,
+        }
+      }
+    });
+
+    if (existingLabourBooking) {
+      throw new BadRequestException('This worker already has a booking or a pending request for this date. Please select another date or worker.');
+    }
+
     const booking = await this.prisma.labourBooking.create({
       data: {
         farmerId,
         labourId: dto.labourId,
         taskType: dto.taskType,
-        date: new Date(dto.date),
+        date: requestedDate,
         numberOfDays: dto.numberOfDays ?? 1,
         location: dto.location,
         workers: dto.workers ?? 1,
+        description: dto.description,
         status: 'pending',
       },
       include: {
@@ -81,7 +137,7 @@ export class LabourService {
       title: 'New Labour Booking',
       message: `${booking.farmer.name || 'A farmer'} requested your services for ${booking.taskType} on ${booking.date.toLocaleDateString()}`,
       type: 'INFO',
-      link: '/(labour)/(tabs)'
+      link: '/(labour)/incoming-jobs'
     });
 
     return booking;
@@ -130,7 +186,7 @@ export class LabourService {
         title: 'Booking Accepted',
         message: `Your labour booking for ${updated.taskType} was accepted.`,
         type: 'SUCCESS',
-        link: '/(farmer)/labour'
+        link: '/(farmer)/labour/my-requests'
       });
     } else if (status === 'rejected') {
       this.notifications.createNotification({
@@ -138,7 +194,7 @@ export class LabourService {
         title: 'Booking Rejected',
         message: `Your labour booking for ${updated.taskType} was rejected.`,
         type: 'ERROR',
-        link: '/(farmer)/labour'
+        link: '/(farmer)/labour/my-requests'
       });
     }
 
@@ -219,6 +275,9 @@ export class LabourService {
     skills?: string[];
     minRating?: number;
     maxPrice?: number;
+    pincode?: string;
+    district?: string;
+    taluka?: string;
   }) {
     const page = filters.page || 1;
     const limit = filters.limit || 15;
@@ -228,6 +287,25 @@ export class LabourService {
     const params: any[] = [];
     const conditions: string[] = ['u."isVerified" = true']; // Added isVerified check for safety
 
+    const hasCoords = filters.lat != null && filters.lng != null;
+
+    if (!hasCoords) {
+      if (filters.pincode) {
+        conditions.push(`u."pincode" = $${paramIndex++}`);
+        params.push(filters.pincode);
+      }
+
+      if (filters.district) {
+        conditions.push(`u."district" ILIKE $${paramIndex++}`);
+        params.push(filters.district);
+      }
+
+      if (filters.taluka) {
+        conditions.push(`u."taluka" ILIKE $${paramIndex++}`);
+        params.push(filters.taluka);
+      }
+    }
+
     if (filters.skills && filters.skills.length > 0) {
       // Use the && operator for text[] array overlap check
       conditions.push(`p."skills" && $${paramIndex++}::text[]`);
@@ -236,11 +314,15 @@ export class LabourService {
 
     if (filters.searchQuery) {
       // Use pg_trgm similarity() for fuzzy matching
+      // Added skills search and lowered threshold to 0.2 for broader discovery
       conditions.push(`(
-        similarity(p."experience", $${paramIndex}) > 0.3 OR 
+        similarity(p."experience", $${paramIndex}) > 0.2 OR 
         p."experience" ILIKE $${paramIndex + 1} OR 
-        similarity(u."name", $${paramIndex}) > 0.3 OR
-        u."name" ILIKE $${paramIndex + 1}
+        similarity(u."name", $${paramIndex}) > 0.2 OR
+        u."name" ILIKE $${paramIndex + 1} OR
+        u."phoneNumber" ILIKE $${paramIndex + 1} OR
+        u."village" ILIKE $${paramIndex + 1} OR
+        EXISTS (SELECT 1 FROM unnest(p."skills") s WHERE s ILIKE $${paramIndex + 1})
       )`);
       params.push(filters.searchQuery);
       params.push(`%${filters.searchQuery}%`);
