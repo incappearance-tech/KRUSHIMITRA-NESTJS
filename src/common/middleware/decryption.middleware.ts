@@ -3,7 +3,6 @@ import {
   NestMiddleware,
   BadRequestException,
 } from '@nestjs/common';
-import { Request, Response, NextFunction } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { CryptoUtil } from '../utils/crypto.util';
 
@@ -11,11 +10,11 @@ import { CryptoUtil } from '../utils/crypto.util';
 export class DecryptionMiddleware implements NestMiddleware {
   constructor(private configService: ConfigService) { }
 
-  use(req: Request, res: Response, next: NextFunction) {
+  use(req: any, res: any, next: () => void) {
     // Only decrypt if body is present and it's a POST/PUT/PATCH request
     const isEncrypted = req.headers['x-encrypted'] === 'true';
     const hasBody = req.body && Object.keys(req.body).length > 0;
-    const isWebhook = req.originalUrl.includes('/payments/webhook');
+    const isWebhook = (req.url || '').includes('/payments/webhook');
 
     if (isWebhook) {
       return next();

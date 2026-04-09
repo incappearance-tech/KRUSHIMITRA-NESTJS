@@ -11,6 +11,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
+import { HttpCacheInterceptor } from '../../common/interceptors/http-cache.interceptor';
 import { MachinesService } from './machines.service';
 import { CreateMachineDto, MachineFilterDto } from './dto/machine.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -33,8 +34,7 @@ export class MachinesController {
   }
 
   @Get()
-  @UseInterceptors(CacheInterceptor)
-  @CacheTTL(30000) // Cache for 30 seconds
+  @UseInterceptors(HttpCacheInterceptor)
   async findAll(@Query() filters: MachineFilterDto) {
     return this.machinesService.findAll(filters);
   }

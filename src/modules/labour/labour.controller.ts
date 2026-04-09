@@ -10,7 +10,8 @@ import {
   UseInterceptors,
   Req,
 } from '@nestjs/common';
-import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
+import { CacheTTL } from '@nestjs/cache-manager';
+import { HttpCacheInterceptor } from '../../common/interceptors/http-cache.interceptor';
 import { LabourService } from './labour.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
@@ -34,7 +35,7 @@ export class LabourController {
   constructor(private readonly labourService: LabourService) { }
 
   @Get('types')
-  @UseInterceptors(CacheInterceptor)
+  @UseInterceptors(HttpCacheInterceptor)
   @CacheTTL(86400000) // 24 hours
   async getTypes() {
     return this.labourService.getTypes();
@@ -70,7 +71,7 @@ export class LabourController {
   @Get('all')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @UseInterceptors(CacheInterceptor)
+  @UseInterceptors(HttpCacheInterceptor)
   @CacheTTL(30000) // 30 seconds
   async findAll(
     @Query('lat') lat?: string,

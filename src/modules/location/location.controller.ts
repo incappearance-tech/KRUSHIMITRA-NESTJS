@@ -1,9 +1,12 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Query, UseInterceptors } from '@nestjs/common';
+import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
 import { LocationService } from './location.service';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
 @ApiTags('Locations')
 @Controller('locations')
+@UseInterceptors(CacheInterceptor)
+@CacheTTL(86400000) // 24 hours global default for this controller
 export class LocationController {
     constructor(private readonly locationService: LocationService) { }
 

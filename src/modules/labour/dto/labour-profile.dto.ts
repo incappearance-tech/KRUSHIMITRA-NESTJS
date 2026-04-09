@@ -41,38 +41,15 @@ export class CreateLabourProfileDto {
   @IsOptional()
   workPreference?: string;
 
-  @ApiPropertyOptional({
-    description: 'Current location address',
-    example: 'Pune, Maharashtra',
-  })
-  @IsString()
+  @ApiPropertyOptional({ description: 'Latitude' })
+  @IsNumber()
   @IsOptional()
-  locationAddress?: string;
+  locationLat?: number;
 
-  @ApiPropertyOptional({ description: 'State' })
+  @ApiPropertyOptional({ description: 'Longitude' })
+  @IsNumber()
   @IsOptional()
-  @IsString()
-  state?: string;
-
-  @ApiPropertyOptional({ description: 'District' })
-  @IsOptional()
-  @IsString()
-  district?: string;
-
-  @ApiPropertyOptional({ description: 'Taluka' })
-  @IsOptional()
-  @IsString()
-  taluka?: string;
-
-  @ApiPropertyOptional({ description: 'Village' })
-  @IsOptional()
-  @IsString()
-  village?: string;
-
-  @ApiPropertyOptional({ description: 'Pin Code' })
-  @IsOptional()
-  @IsString()
-  pincode?: string;
+  locationLng?: number;
 
   @ApiPropertyOptional({ description: 'Availability status', example: true })
   @IsBoolean()

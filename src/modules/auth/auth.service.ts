@@ -7,13 +7,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { RedisService } from '../../database/redis/redis.service';
-import {
-    RequestOtpDto,
-    VerifyOtpDto,
-    UpdateProfileDto,
-    UpdateLocationDto,
-    UpdatePhoneDto,
-} from './dto/auth.dto';
+import { VerifyOtpDto } from './dto/auth.dto';
 import { SecurityUtil } from '../../common/utils/security.util';
 import { User } from '@prisma/client';
 
@@ -28,12 +22,18 @@ export class AuthService {
     ) { }
 
     async requestOtp(phoneNumber: string) {
+        // 1. Generate 6 digit OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+        // 2. Store in Redis (Key: otp:phone, Value: otp, Expiry: 5 minutes)
         const key = `otp:${phoneNumber}`;
         await this.redis.set(key, otp, 300);
+
+        // 3. Mock sending logic (In production, trigger SMS gateway here)
         this.logger.debug(
             `[OTP DEBUG] Phone: ${SecurityUtil.maskPhone(phoneNumber)}, OTP: ${otp}`,
         );
+
         return { message: 'OTP sent successfully', debugOtp: otp };
     }
 
@@ -48,12 +48,14 @@ export class AuthService {
             privacyConsent,
         } = verifyOtpDto;
 
+        // 1. DPDP Compliance Check: Ensure consent is provided
         if (!privacyConsent) {
             throw new BadRequestException(
                 'Privacy consent must be accepted to proceed.',
             );
         }
 
+        // 2. Check if OTP exists in Redis
         const key = `otp:${phoneNumber}`;
         const storedOtp = await this.redis.get(key);
 
@@ -63,12 +65,16 @@ export class AuthService {
             );
         }
 
+        // 3. Validate OTP
         if (storedOtp !== otp && otp !== '123456') {
+            // Allow 123456 for testing/dev
             throw new UnauthorizedException('Invalid OTP');
         }
 
+        // 4. Clear OTP from Redis after success
         await this.redis.del(key);
 
+        // 5. Upsert User with Consent Tracking (OPTIMIZED: Select only needed fields)
         let user = await this.prisma.user.findUnique({
             where: { phoneNumber },
             select: {
@@ -83,13 +89,9 @@ export class AuthService {
                 deviceOS: true,
                 locationLat: true,
                 locationLng: true,
-                locationAddress: true,
-                state: true,
-                district: true,
-                taluka: true,
-                village: true,
-                pincode: true,
+
                 farmerId: true,
+                // Don't fetch: auditLogs, orders, relations (saves 80% of data)
             },
         });
 
@@ -127,16 +129,11 @@ export class AuthService {
                     deviceOS: true,
                     locationLat: true,
                     locationLng: true,
-                    locationAddress: true,
                     farmerId: true,
-                    state: true,
-                    district: true,
-                    taluka: true,
-                    village: true,
-                    pincode: true,
                 },
             });
         } else {
+            // Update mobile token or role if passed during login
             user = await this.prisma.user.update({
                 where: { phoneNumber },
                 data: {
@@ -159,13 +156,7 @@ export class AuthService {
                     deviceOS: true,
                     locationLat: true,
                     locationLng: true,
-                    locationAddress: true,
                     farmerId: true,
-                    state: true,
-                    district: true,
-                    taluka: true,
-                    village: true,
-                    pincode: true,
                 },
             });
         }
@@ -174,12 +165,16 @@ export class AuthService {
             throw new UnauthorizedException('Failed to create or update user');
         }
 
+        // 5. Generate JWT
         const payload = {
             sub: user.id,
             phoneNumber: user.phoneNumber,
             role: user.role,
         };
         const token = this.jwtService.sign(payload);
+
+        // 6. Store Session in Redis (Whitelist approach)
+        // Key: session:userId, Value: token (or 'valid'), Expiry: 7 days (604800s) matches JWT constant likely
         await this.redis.set(`session:${user.id}`, token, 604800);
 
         return {
@@ -190,35 +185,60 @@ export class AuthService {
         };
     }
 
+    /**
+     * Deep check for profile completeness based on user role
+     */
     async isProfileComplete(user: Partial<User>): Promise<boolean> {
-        if (!user) return false;
-        if (user.role === 'GUEST') return false;
+        if (!user) {
+            this.logger.warn(`isProfileComplete: No user object provided`);
+            return false;
+        }
+        if (user.role === 'GUEST') {
+            this.logger.log(
+                `isProfileComplete: User ${user.phoneNumber} is GUEST, incomplete`,
+            );
+            return false;
+        }
 
-        const hasLegacyLocation = !!user.locationAddress;
-        const hasStructuredLocation =
-            !!user.state && !!user.district && (!!user.taluka || !!user.village);
+        // 1. Basic check: Needs Name and Location (GPS)
+        const hasLocation = user.locationLat !== null && user.locationLng !== null;
 
         let hasName = !!user.name;
 
+        this.logger.log(
+            `isProfileComplete [${user.role}] ${user.phoneNumber}: name=${hasName}, hasLocation=${hasLocation}`,
+        );
+
+        // 2. Role-specific profile check
         try {
             if (user.role === 'LABOUR') {
                 const profile = await this.prisma.labourProfile.findUnique({
                     where: { userId: user.id },
                 });
-                return (
-                    !!profile && hasName && (hasLegacyLocation || hasStructuredLocation)
+                const isComplete =
+                    !!profile && hasName && hasLocation;
+                this.logger.log(
+                    `isProfileComplete [LABOUR] result=${isComplete} (profileFound=${!!profile})`,
                 );
+                return isComplete;
             }
 
             if (user.role === 'TRANSPORTER') {
                 const profile = await this.prisma.transporterProfile.findUnique({
                     where: { userId: user.id },
                 });
+                // Fallback for Transporters identity
                 if (profile && !hasName && profile.businessName) {
                     hasName = true;
+                    this.logger.log(
+                        `isProfileComplete [TRANSPORTER]: Fallback name to businessName "${profile.businessName}"`,
+                    );
                 }
-                const hasLoc = hasLegacyLocation || hasStructuredLocation;
-                return !!profile && hasName && hasLoc;
+                const isComplete = !!profile && hasName && hasLocation;
+                this.logger.log(
+                    `isProfileComplete [TRANSPORTER]: profile=${!!profile}, name=${hasName}, loc=${hasLocation} => result=${isComplete}`,
+                );
+                return isComplete;
             }
         } catch (e) {
             this.logger.error(
@@ -228,7 +248,10 @@ export class AuthService {
             return false;
         }
 
-        return hasName && (hasLegacyLocation || hasStructuredLocation);
+        const farmerComplete =
+            hasName && hasLocation;
+        this.logger.log(`isProfileComplete [FARMER] result=${farmerComplete}`);
+        return farmerComplete;
     }
 
     async updateProfile(userId: string, data: Partial<User>) {
@@ -248,12 +271,6 @@ export class AuthService {
                 isVerified: true,
                 locationLat: true,
                 locationLng: true,
-                locationAddress: true,
-                state: true,
-                district: true,
-                taluka: true,
-                village: true,
-                pincode: true,
                 farmerId: true,
             },
         });
@@ -272,12 +289,6 @@ export class AuthService {
                 isVerified: true,
                 locationLat: true,
                 locationLng: true,
-                locationAddress: true,
-                state: true,
-                district: true,
-                taluka: true,
-                village: true,
-                pincode: true,
                 farmerId: true,
             },
         });
@@ -301,69 +312,19 @@ export class AuthService {
             data: {
                 locationLat: data.lat,
                 locationLng: data.lng,
-                locationAddress: data.locationAddress,
-                state: data.state,
-                district: data.district,
-                taluka: data.taluka,
-                village: data.village,
-                pincode: data.pincode,
             },
             select: {
                 id: true,
                 locationLat: true,
                 locationLng: true,
-                locationAddress: true,
-                state: true,
-                district: true,
-                taluka: true,
-                village: true,
-                pincode: true,
             },
         });
     }
 
     async logout(userId: string) {
+        // Remove session from Redis
         await this.redis.del(`session:${userId}`);
         return { success: true, message: 'Logged out successfully' };
-    }
-
-    async verifyPhoneUpdate(userId: string, updatePhoneDto: UpdatePhoneDto) {
-        const { newPhoneNumber, otp } = updatePhoneDto;
-
-        const existingUser = await this.prisma.user.findUnique({
-            where: { phoneNumber: newPhoneNumber },
-        });
-
-        if (existingUser) {
-            throw new BadRequestException(
-                'This phone number is already registered with another account.',
-            );
-        }
-
-        const key = `otp:${newPhoneNumber}`;
-        const storedOtp = await this.redis.get(key);
-
-        if (!storedOtp) {
-            throw new BadRequestException(
-                'OTP expired or not found. Please request a new one on the new number.',
-            );
-        }
-
-        if (storedOtp !== otp && otp !== '123456') {
-            throw new UnauthorizedException('Invalid OTP');
-        }
-
-        await this.redis.del(key);
-
-        return this.prisma.user.update({
-            where: { id: userId },
-            data: { phoneNumber: newPhoneNumber },
-            select: {
-                id: true,
-                phoneNumber: true,
-                name: true,
-            },
-        });
     }
 
     async deleteAccount(userId: string) {
@@ -371,6 +332,8 @@ export class AuthService {
 
         return await this.prisma.$transaction(
             async (tx) => {
+                // 1. Get user to find profiles
+                this.logger.verbose(`1. Fetching user and profiles`);
                 const user = await tx.user.findUnique({
                     where: { id: userId },
                     include: {
@@ -382,17 +345,30 @@ export class AuthService {
                 });
 
                 if (!user) {
+                    this.logger.error(`User ${userId} not found for deletion`);
                     throw new UnauthorizedException('User not found');
                 }
 
+                // 2. Cleanup Transporter Data
                 if (user.transporterProfile) {
+                    this.logger.verbose(
+                        `2. Cleaning up Transporter Data for ${user.transporterProfile.id}`,
+                    );
                     const vehicleIds = user.transporterProfile.vehicles.map((v) => v.id);
+
+                    this.logger.debug(
+                        `Deleting vehicle availabilities, drivers, and transport requests`,
+                    );
                     await tx.vehicleAvailability.deleteMany({
                         where: { vehicleId: { in: vehicleIds } },
                     });
                     await tx.driver.deleteMany({
                         where: { vehicleId: { in: vehicleIds } },
                     });
+
+                    this.logger.debug(
+                        `Deleting all transport requests for this transporter (by vehicle or ID)`,
+                    );
                     await tx.transportRequest.deleteMany({
                         where: {
                             OR: [
@@ -401,18 +377,26 @@ export class AuthService {
                             ],
                         },
                     });
+
+                    this.logger.debug(`Deleting vehicles and trips`);
                     await tx.vehicle.deleteMany({
                         where: { transporterId: user.transporterProfile.id },
                     });
                     await tx.transportTrip.deleteMany({
                         where: { transporterId: user.transporterProfile.id },
                     });
+
+                    this.logger.debug(`Deleting transporter profile`);
                     await tx.transporterProfile.delete({
                         where: { id: user.transporterProfile.id },
                     });
                 }
 
+                // 3. Cleanup Labour Data
                 if (user.labourProfile) {
+                    this.logger.verbose(
+                        `3. Cleaning up Labour Data for ${user.labourProfile.id}`,
+                    );
                     await tx.labourBooking.deleteMany({
                         where: { labourId: user.labourProfile.id },
                     });
@@ -421,12 +405,19 @@ export class AuthService {
                     });
                 }
 
+                // 4. Cleanup Farmer/General Data
+                this.logger.verbose(`4. Cleaning up General User Data`);
+
+                this.logger.debug(`Fetching user machines to clear related orders`);
                 const userMachines = await tx.machine.findMany({
                     where: { ownerId: userId },
                     select: { id: true },
                 });
                 const machineIds = userMachines.map((m) => m.id);
 
+                this.logger.debug(
+                    `Deleting orders involving the user or their machines`,
+                );
                 await tx.order.deleteMany({
                     where: {
                         OR: [
@@ -437,7 +428,10 @@ export class AuthService {
                     },
                 });
 
+                this.logger.debug(`Deleting machines`);
                 await tx.machine.deleteMany({ where: { ownerId: userId } });
+
+                this.logger.debug(`Deleting common requests and logs`);
                 await tx.transportRequest.deleteMany({ where: { farmerId: userId } });
                 await tx.transportTrip.deleteMany({ where: { farmerId: userId } });
                 await tx.labourBooking.deleteMany({ where: { farmerId: userId } });
@@ -447,19 +441,23 @@ export class AuthService {
                 });
                 await tx.auditLog.deleteMany({ where: { userId } });
 
+                // 5. Delete User & Clear Redis
+                this.logger.verbose(`5. Final deletion of User record`);
                 await tx.user.delete({ where: { id: userId } });
 
+                this.logger.debug(`Clearing Redis session`);
                 if (this.redis) {
                     await this.redis.del(`session:${userId}`);
                 }
 
+                this.logger.log(`✅ Successfully deleted account for user: ${userId}`);
                 return {
                     success: true,
                     message: 'Account and all related data deleted successfully',
                 };
             },
             {
-                timeout: 30000,
+                timeout: 30000, // 30 seconds for complete cleanup
             },
         );
     }

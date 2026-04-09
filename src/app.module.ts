@@ -6,6 +6,9 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { CacheModule } from '@nestjs/cache-manager';
 import { redisStore } from 'cache-manager-redis-yet';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import Redis from 'ioredis';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -26,6 +29,14 @@ import { SignatureMiddleware } from './common/middleware/signature.middleware';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { UploadModule } from './modules/upload/upload.module';
 import { LocationModule } from './modules/location/location.module';
+import { NotificationWorkerModule } from './workers/notification/notification.worker.module';
+import { PaymentWorkerModule } from './workers/payment/payment.worker.module';
+import { ImageWorkerModule } from './workers/image/image.worker.module';
+import { ReportWorkerModule } from './workers/report/report.worker.module';
+import { EventsModule } from './events/events.module';
+import { SecurityGuard } from './common/guards/security.guard';
+import { AppLoggerModule } from './common/logger/logger.module';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -67,12 +78,30 @@ import { LocationModule } from './modules/location/location.module';
       },
       inject: [ConfigService],
     }),
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000, // 1 minute
-        limit: 100, // 100 requests per minute
-      },
-    ]),
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        throttlers: [{
+          ttl: 60000,
+          limit: 100,
+        }],
+        storage: new ThrottlerStorageRedisService(
+          new Redis({
+            host: config.get('REDIS_HOST'),
+            port: parseInt(config.get('REDIS_PORT') || '6379'),
+            password: config.get('REDIS_PASSWORD'),
+            ...(config.get('REDIS_HOST') !== 'localhost' && {
+              tls: { servername: config.get('REDIS_HOST') }
+            }),
+          })
+        ),
+      }),
+    }),
+    EventEmitterModule.forRoot({
+      wildcard: true,
+      delimiter: '.',
+    }),
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
@@ -109,10 +138,20 @@ import { LocationModule } from './modules/location/location.module';
     NotificationsModule,
     UploadModule,
     LocationModule,
+    NotificationWorkerModule,
+    PaymentWorkerModule,
+    ImageWorkerModule,
+    ReportWorkerModule,
+    EventsModule,
+    AppLoggerModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
+    {
+      provide: APP_GUARD,
+      useClass: SecurityGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
@@ -126,12 +165,7 @@ import { LocationModule } from './modules/location/location.module';
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
-      .apply(
-        LoggerMiddleware, // Log all requests
-        TimestampMiddleware, // Validate timestamp & nonce (anti-replay)
-        SignatureMiddleware, // Verify HMAC signature FIRST (of Encrypted Payload) - Authenticate then Decrypt pattern
-        DecryptionMiddleware, // Then Decrypt payload
-      )
-      .forRoutes('*');
+      .apply(LoggerMiddleware)
+      .forRoutes('(.*)');
   }
 }

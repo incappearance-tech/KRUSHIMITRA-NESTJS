@@ -1,62 +1,66 @@
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import {
-  ValidationPipe,
-  Logger,
   ClassSerializerInterceptor,
+  ValidationPipe,
 } from '@nestjs/common';
-
+import { Logger } from 'nestjs-pino';
 import { NestFactory, Reflector } from '@nestjs/core';
+import {
+  FastifyAdapter,
+  NestFastifyApplication,
+} from '@nestjs/platform-fastify';
 import { ConfigService } from '@nestjs/config';
-import helmet from 'helmet';
-import compression from 'compression';
-import { json } from 'express';
+import helmet from '@fastify/helmet';
+import compression from '@fastify/compress';
+import * as Sentry from '@sentry/node';
+import { nodeProfilingIntegration } from '@sentry/profiling-node';
+import rawBody from 'fastify-raw-body';
 
 import { AppModule } from './app.module';
-import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
-  const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule);
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    integrations: [nodeProfilingIntegration()],
+    tracesSampleRate: 1.0,
+    profilesSampleRate: 1.0,
+  });
 
-  // Preserve raw body for Razorpay webhook verification
-  app.use(
-    json({
-      verify: (req: any, res, buf) => {
-        if (req.url.includes('/payments/webhook')) {
-          req.rawBody = buf.toString();
-        }
-      },
-    }),
+  const app = await NestFactory.create<NestFastifyApplication>(
+    AppModule,
+    new FastifyAdapter({ logger: false })
   );
+
+  // 0. High-Performance Logging
+  app.useLogger(app.get(Logger));
 
   const configService = app.get(ConfigService);
 
-  // 1. Global Security Headers (Helmet)
-  app.use(helmet());
+  // Preserve raw body for Razorpay webhook verification via Fastify plugin
+  // Multipart handling for Fastify (Replaces Multer)
+  await app.register(require('@fastify/multipart'), {
+    limits: {
+      fieldNameSize: 100, // Max field name size in bytes
+      fieldSize: 1000000, // Max field value size in bytes (1MB)
+      fields: 10,         // Max number of non-file fields
+      fileSize: 10485760, // Max file size in bytes (10MB)
+      files: 1,           // Max number of file fields
+    }
+  });
 
-  // 2. Response Compression (Reduces payload size by ~70%)
-  app.use(
-    compression({
-      filter: (req: any, res: any) => {
-        // DON'T compress SSE - it causes buffering and breaks real-time delivery
-        if (req.headers['accept'] === 'text/event-stream' || req.originalUrl?.includes('/notifications/stream')) {
-          return false;
-        }
-        if (req.headers['x-no-compression']) {
-          return false;
-        }
-        return compression.filter(req, res);
-      },
-      level: 6,
-    }),
-  );
+  // 1. Global Security Headers (Helmet for Fastify)
+  await app.register(helmet as any);
+
+  // 2. Response Compression via Fastify plugin
+  await app.register(compression as any, {
+    encodings: ['gzip', 'deflate'],
+  });
 
   // 3. Global Serialization (Prunes @Exclude properties)
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   // 4. Global Interceptors & Filters (Mobile-First Architecture)
-  // app.useGlobalInterceptors(new ResponseInterceptor(configService)); // Removed duplicate
   app.useGlobalFilters(new GlobalExceptionFilter());
 
   // Set global API prefix
@@ -93,11 +97,11 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3000;
   await app.listen(port, '0.0.0.0');
-  logger.log(
+  const appLogger = app.get(Logger);
+  appLogger.log(
     `🚀 Krushimitra Mobile API running on: http://0.0.0.0:${port}/api/v1`,
   );
-  logger.log(`📱 Optimized for Android & iOS`);
-  logger.log(`⚡ Compression enabled - 70% smaller responses`);
+  appLogger.log(`📱 Optimized for Android & iOS with FASTIFY engine`);
+  appLogger.log(`⚡ Compression enabled - 70% smaller responses`);
 }
-// Force Restart Trigger 6
 bootstrap();

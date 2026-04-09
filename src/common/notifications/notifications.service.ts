@@ -1,8 +1,5 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
-import { Subject, filter, map, merge, interval, timer } from 'rxjs';
-import { RedisService } from '../../database/redis/redis.service';
-import Redis from 'ioredis';
 
 // Firebase Admin is loaded lazily to avoid startup crash if not configured
 let admin: any;
@@ -12,50 +9,18 @@ try {
   admin = null;
 }
 
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
 @Injectable()
-export class NotificationsService implements OnModuleInit {
+export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
   private initialized = false;
-  private readonly notificationSubject = new Subject<any>();
-  private subscriber: Redis;
 
   constructor(
     private prisma: PrismaService,
-    private redisService: RedisService,
+    private eventEmitter: EventEmitter2
   ) {
     this.initFirebase();
-  }
-
-  async onModuleInit() {
-    this.setupRedisSubscriber();
-  }
-
-  private setupRedisSubscriber() {
-    // Create a dedicated subscriber client (ioredis requires a separate client for blocking sub)
-    this.subscriber = this.redisService.client.duplicate();
-
-    this.subscriber.on('error', (err: any) => {
-      if (err?.code === 'ECONNRESET') {
-        this.logger.warn('Redis Subscriber Connection Reset (ECONNRESET) - Reconnecting...');
-        return;
-      }
-      this.logger.error('Redis Subscriber Error:', err);
-    });
-
-    this.subscriber.subscribe('notifications');
-
-    this.subscriber.on('message', (channel, message) => {
-      if (channel === 'notifications') {
-        try {
-          const notification = JSON.parse(message);
-          this.notificationSubject.next(notification);
-        } catch (e) {
-          this.logger.error('Failed to parse Redis notification message', e);
-        }
-      }
-    });
-
-    this.logger.log('Redis Sub: Listening for notifications across instances');
   }
 
   async getUserNotifications(userId: string) {
@@ -113,40 +78,14 @@ export class NotificationsService implements OnModuleInit {
       },
     });
 
-    // 1. Push to cross-instance stream via Redis
-    this.logger.log(`Emitting notification for user: ${data.userId}`);
-    this.redisService.client.publish('notifications', JSON.stringify(dbNotification));
-
-    // 2. Also emit to local subject for immediate delivery on the SAME instance
-    this.notificationSubject.next(dbNotification);
-
     if (data.sendPush !== false) {
-      // Background task - don't block the API response
-      this.sendToUser(data.userId, data.title, data.message, data.pushData);
+      await this.sendToUser(data.userId, data.title, data.message, data.pushData);
     }
 
+    // Emit event for real-time SSE stream
+    this.eventEmitter.emit('notification.created', dbNotification);
+
     return dbNotification;
-  }
-
-  // SSE Stream for a specific user
-  streamNotifications(userId: string) {
-    // 1. Initial connection event so the client knows it's live
-    const init$ = timer(0).pipe(
-      map(() => ({ data: { connected: true, message: 'Real-time notifications active' } })),
-    );
-
-    const notifications$ = this.notificationSubject.asObservable().pipe(
-      filter((notification) => notification.userId === userId),
-      map((notification) => ({ data: notification })),
-    );
-
-    // Add a heartbeat every 20 seconds to keep the connection alive in production (Render/Cloudflare/Nginx)
-    const heartbeat$ = interval(20000).pipe(
-      map(() => ({ data: { heartbeat: true } })),
-    );
-
-    // Start with the init event, then merge others
-    return merge(init$, notifications$, heartbeat$);
   }
 
   private initFirebase() {
@@ -192,7 +131,7 @@ export class NotificationsService implements OnModuleInit {
     });
 
     if (!user?.fcmToken) {
-      this.logger.warn(`Skipping push: No FCM token for user ${userId}. Make sure the device is registered.`);
+      this.logger.debug(`No FCM token for user ${userId}`);
       return;
     }
 

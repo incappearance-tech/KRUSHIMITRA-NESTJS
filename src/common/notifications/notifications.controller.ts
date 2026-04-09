@@ -1,71 +1,69 @@
-import { Controller, Get, Patch, Delete, Param, UseGuards, Sse, Logger, Header, Query, Req } from '@nestjs/common';
+import { Controller, Get, Patch, Delete, Param, UseGuards, Sse, MessageEvent } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { GetUser } from '../decorators/get-user.decorator';
-import { JwtService } from '@nestjs/jwt';
+import { Observable, interval, fromEvent, map, filter, merge } from 'rxjs';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @ApiTags('notifications')
 @ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller('notifications')
 export class NotificationsController {
-    private readonly logger = new Logger(NotificationsController.name);
     constructor(
         private readonly notificationsService: NotificationsService,
-        private readonly jwtService: JwtService,
+        private eventEmitter: EventEmitter2
     ) { }
 
+    @Sse('stream')
+    @ApiOperation({ summary: 'Real-time notification stream (SSE)' })
+    stream(@GetUser('id') userId: string): Observable<MessageEvent> {
+        this.notificationsService.getUserNotifications(userId); // Just to verify user
+
+        // 1. Initial connection message
+        const initialEvent = new Observable<MessageEvent>(subscriber => {
+            subscriber.next({
+                data: { connected: true, message: 'Connected to Notifications Stream' }
+            } as MessageEvent);
+            subscriber.complete();
+        });
+
+        // 2. Heartbeat every 30 seconds to keep connection alive
+        const heartbeat = interval(30000).pipe(
+            map(() => ({ data: { heartbeat: true } } as MessageEvent))
+        );
+
+        // 3. Real-time events from EventEmitter
+        const eventStream = fromEvent(this.eventEmitter, 'notification.created').pipe(
+            filter((notification: any) => notification.userId === userId),
+            map((notification: any) => ({
+                data: notification
+            } as MessageEvent))
+        );
+
+        return merge(initialEvent, heartbeat, eventStream);
+    }
+
     @Get()
-    @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Get all user notifications' })
     async getUserNotifications(@GetUser('id') userId: string) {
         return this.notificationsService.getUserNotifications(userId);
     }
 
-    @Sse('stream')
-    @Header('Content-Type', 'text/event-stream')
-    @Header('Cache-Control', 'no-cache')
-    @Header('Connection', 'keep-alive')
-    @ApiOperation({ summary: 'Real-time notification stream (SSE)' })
-    stream(@Req() req: any, @Query('token') queryToken?: string) {
-        // Manual token extraction — guards interfere with NestJS SSE lifecycle
-        const authHeader = (req.headers['authorization'] || req.headers['Authorization']) as string;
-        const rawToken = authHeader?.replace('Bearer ', '').trim() || queryToken;
-
-        if (!rawToken) {
-            this.logger.warn('SSE: No token provided');
-            throw new Error('Unauthorized');
-        }
-
-        let userId: string;
-        try {
-            const payload = this.jwtService.verify(rawToken) as any;
-            userId = payload.sub || payload.id || payload.userId;
-        } catch (e) {
-            this.logger.warn(`SSE: Invalid token - ${e.message}`);
-            throw new Error('Unauthorized');
-        }
-
-        this.logger.log(`📱 [SSE] Real-time stream connected for user: ${userId}`);
-        return this.notificationsService.streamNotifications(userId);
-    }
-
     @Get('unread-count')
-    @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Get unread notification count' })
     async getUnreadCount(@GetUser('id') userId: string) {
         return this.notificationsService.getUnreadCount(userId);
     }
 
     @Patch('read-all')
-    @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Mark all notifications as read' })
     async markAllAsRead(@GetUser('id') userId: string) {
         return this.notificationsService.markAllAsRead(userId);
     }
 
     @Patch(':id/read')
-    @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Mark single notification as read' })
     async markAsRead(
         @GetUser('id') userId: string,
@@ -75,7 +73,6 @@ export class NotificationsController {
     }
 
     @Delete(':id')
-    @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Delete a single notification' })
     async deleteNotification(
         @GetUser('id') userId: string,

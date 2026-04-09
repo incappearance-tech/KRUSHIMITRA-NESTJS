@@ -2,12 +2,10 @@ import {
     Controller,
     Post,
     UseGuards,
-    UseInterceptors,
-    UploadedFile,
     BadRequestException,
-    Body,
+    Req,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import type { FastifyRequest } from 'fastify';
 import { UploadService } from './upload.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
@@ -32,42 +30,56 @@ export class UploadController {
                     format: 'binary',
                     description: 'The raw huge image file to be optimized into WebP',
                 },
-                folder: {
+                type: {
                     type: 'string',
-                    description: 'Optional storage folder name (e.g., profiles, machines)',
-                    default: 'general',
+                    description: 'Entity type (profile, document, vehicle, machine)',
+                    default: 'profile',
+                },
+                isPrivate: {
+                    type: 'boolean',
+                    description: 'If true, generates a secure Signed URL instead of public URL',
+                    default: false,
                 }
             },
             required: ['file']
         },
     })
-    @UseInterceptors(
-        FileInterceptor('file', {
-            limits: {
-                fileSize: 10 * 1024 * 1024, // Set 10MB absolute limit to prevent memory attack
-            },
-            fileFilter: (req, file, cb) => {
-                // Only accept images
-                if (!file.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
-                    return cb(new BadRequestException('Only image files are allowed!'), false);
-                }
-                cb(null, true);
-            },
-        }),
-    )
     async uploadFile(
-        @UploadedFile() file: Express.Multer.File,
+        @Req() req: FastifyRequest,
         @GetUser('id') userId: string,
-        @Body('folder') folder?: string,
     ) {
-        if (!file) {
+        // Fastify Multipart handling:
+        const data = await (req as any).file();
+        if (!data) {
             throw new BadRequestException('No file provided');
         }
 
-        // Pass the raw buffer directly to our fast Sharp optimization pipeline
-        const publicUrl = await this.uploadService.optimizeAndUploadImage(file, userId, folder);
+        // Extract metadata from fields
+        const type = (data.fields.type as any)?.value || (data.fields.folder as any)?.value || 'profile';
+        const isPrivate = (data.fields.isPrivate as any)?.value === 'true';
+
+        // Mime-type validation
+        if (!data.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
+            throw new BadRequestException('Only image files are allowed!');
+        }
+
+        // Convert stream to buffer for the Sharp upload service
+        const buffer = await data.toBuffer();
+        const fileMetadata = {
+            buffer,
+            originalname: data.filename,
+            mimetype: data.mimetype,
+        };
+
+        const publicUrl = await this.uploadService.optimizeAndUploadImage(
+            fileMetadata as any,
+            userId,
+            type as any,
+            isPrivate
+        );
 
         return {
+            success: true,
             message: 'Image successfully uploaded and optimized',
             url: publicUrl,
         };

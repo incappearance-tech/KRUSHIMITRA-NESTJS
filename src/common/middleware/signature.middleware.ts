@@ -28,9 +28,9 @@ export class SignatureMiddleware implements NestMiddleware {
     // Skip for GET requests, health checks, uploads, and Razorpay webhook
     if (
       req.method === 'GET' ||
-      req.originalUrl.includes('/health') ||
-      req.originalUrl.includes('/upload') ||
-      req.originalUrl.includes('/payments/webhook')
+      req.url.includes('/health') ||
+      req.url.includes('/upload') ||
+      req.url.includes('/payments/webhook')
     ) {
       return next();
     }
@@ -44,7 +44,7 @@ export class SignatureMiddleware implements NestMiddleware {
     }
 
     // Normalize path candidates
-    const originalPath = req.originalUrl.split('?')[0]; // /api/v1/auth/...
+    const originalPath = req.url.split('?')[0]; // /api/v1/auth/...
     const normalizedPath = originalPath.replace(/^\/api\/v\d+/, ''); // /auth/...
     const rawPath = req.path; // / or /api/v1/...
 
