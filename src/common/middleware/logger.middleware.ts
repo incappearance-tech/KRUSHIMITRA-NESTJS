@@ -1,20 +1,20 @@
 import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
-import { Request, Response, NextFunction } from 'express';
 
 @Injectable()
 export class LoggerMiddleware implements NestMiddleware {
   private logger = new Logger('HTTP');
 
-  use(request: Request, response: Response, next: NextFunction): void {
-    const { ip, method, originalUrl } = request;
-    const userAgent = request.get('user-agent') || '';
+  use(request: any, response: any, next: () => void): void {
+    const { ip, method, url } = request;
+    // Fastify/Middie raw request doesn't have .get(), use headers directly
+    const userAgent = request.headers['user-agent'] || '';
     const startTime = Date.now();
 
     response.on('finish', () => {
       const { statusCode } = response;
       const duration = Date.now() - startTime;
 
-      const logMessage = `${method} ${originalUrl} ${statusCode} ${duration}ms - ${userAgent} ${ip}`;
+      const logMessage = `${method} ${url} ${statusCode} ${duration}ms - ${userAgent} ${ip}`;
 
       if (statusCode >= 500) {
         this.logger.error(logMessage);

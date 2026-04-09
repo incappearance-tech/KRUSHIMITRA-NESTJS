@@ -132,11 +132,6 @@ export class UpdateProfileDto {
   @IsString()
   farmerId?: string;
 
-  @ApiPropertyOptional({ description: 'Formatted address from geocoding' })
-  @IsOptional()
-  @IsString()
-  locationAddress?: string;
-
   @ApiPropertyOptional({ description: 'GPS latitude', example: 18.5204 })
   @IsOptional()
   @IsNumber()
@@ -146,31 +141,6 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsNumber()
   locationLng?: number;
-
-  @ApiPropertyOptional({ description: 'State' })
-  @IsOptional()
-  @IsString()
-  state?: string;
-
-  @ApiPropertyOptional({ description: 'District' })
-  @IsOptional()
-  @IsString()
-  district?: string;
-
-  @ApiPropertyOptional({ description: 'Taluka' })
-  @IsOptional()
-  @IsString()
-  taluka?: string;
-
-  @ApiPropertyOptional({ description: 'Village' })
-  @IsOptional()
-  @IsString()
-  village?: string;
-
-  @ApiPropertyOptional({ description: 'Pin Code' })
-  @IsOptional()
-  @IsString()
-  pincode?: string;
 }
 
 export class UpdateLocationDto {
@@ -182,36 +152,5 @@ export class UpdateLocationDto {
   @IsNumber()
   lng: number;
 
-  @ApiPropertyOptional({
-    description: 'Formatted address string',
-    example: 'Pune, Maharashtra',
-  })
-  @IsOptional()
-  @IsString()
-  locationAddress?: string;
 
-  @ApiPropertyOptional({ description: 'State' })
-  @IsOptional()
-  @IsString()
-  state?: string;
-
-  @ApiPropertyOptional({ description: 'District' })
-  @IsOptional()
-  @IsString()
-  district?: string;
-
-  @ApiPropertyOptional({ description: 'Taluka' })
-  @IsOptional()
-  @IsString()
-  taluka?: string;
-
-  @ApiPropertyOptional({ description: 'Village' })
-  @IsOptional()
-  @IsString()
-  village?: string;
-
-  @ApiPropertyOptional({ description: 'Pin Code' })
-  @IsOptional()
-  @IsString()
-  pincode?: string;
 }

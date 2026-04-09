@@ -37,16 +37,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         farmerId: true,
         locationLat: true,
         locationLng: true,
-        locationAddress: true,
         preferredLanguage: true,
         isVerified: true,
         fcmToken: true,
         deviceOS: true,
-        state: true,
-        district: true,
-        taluka: true,
-        village: true,
-        pincode: true,
+
       },
     });
 

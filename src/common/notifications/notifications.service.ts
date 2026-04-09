@@ -9,12 +9,17 @@ try {
   admin = null;
 }
 
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
   private initialized = false;
 
-  constructor(private prisma: PrismaService) {
+  constructor(
+    private prisma: PrismaService,
+    private eventEmitter: EventEmitter2
+  ) {
     this.initFirebase();
   }
 
@@ -76,6 +81,9 @@ export class NotificationsService {
     if (data.sendPush !== false) {
       await this.sendToUser(data.userId, data.title, data.message, data.pushData);
     }
+
+    // Emit event for real-time SSE stream
+    this.eventEmitter.emit('notification.created', dbNotification);
 
     return dbNotification;
   }

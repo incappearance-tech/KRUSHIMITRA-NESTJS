@@ -10,8 +10,11 @@ import {
   Query,
   UseInterceptors,
 } from '@nestjs/common';
-import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
+import { CacheTTL } from '@nestjs/cache-manager';
+import { HttpCacheInterceptor } from '../../common/interceptors/http-cache.interceptor';
 import { TransporterService } from './transporter.service';
+import { TransporterProfileService } from './profile.service';
+import { VehicleService } from './vehicle.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
 import { CreateTransporterProfileDto } from './dto/transporter-profile.dto';
@@ -29,14 +32,18 @@ import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class TransporterController {
-  constructor(private readonly transporterService: TransporterService) { }
+  constructor(
+    private readonly transporterService: TransporterService,
+    private readonly profileService: TransporterProfileService,
+    private readonly vehicleService: VehicleService,
+  ) { }
 
   // ───── PROFILE ─────────────────────────────────────────────
 
   @Get('profile')
   @ApiOperation({ summary: 'Get own transporter profile' })
   async getProfile(@GetUser('id') userId: string) {
-    return this.transporterService.getProfile(userId);
+    return this.profileService.getProfile(userId);
   }
 
   @Post('profile')
@@ -45,7 +52,7 @@ export class TransporterController {
     @GetUser('id') userId: string,
     @Body() dto: CreateTransporterProfileDto,
   ) {
-    return this.transporterService.upsertProfile(userId, dto);
+    return this.profileService.upsertProfile(userId, dto);
   }
 
   // ───── LEGACY LEADS (TransportTrip) ────────────────────────
@@ -93,7 +100,7 @@ export class TransporterController {
     @GetUser('id') userId: string,
     @Body() dto: CreateVehicleDto,
   ) {
-    return this.transporterService.addVehicle(userId, dto);
+    return this.vehicleService.addVehicle(userId, dto);
   }
 
   @Patch('vehicles/:id')
@@ -103,7 +110,7 @@ export class TransporterController {
     @Param('id') vehicleId: string,
     @Body() dto: Partial<CreateVehicleDto>,
   ) {
-    return this.transporterService.updateVehicle(userId, vehicleId, dto);
+    return this.vehicleService.updateVehicle(userId, vehicleId, dto);
   }
 
   @Delete('vehicles/:id')
@@ -114,13 +121,13 @@ export class TransporterController {
     @GetUser('id') userId: string,
     @Param('id') vehicleId: string,
   ) {
-    return this.transporterService.deleteVehicle(userId, vehicleId);
+    return this.vehicleService.deleteVehicle(userId, vehicleId);
   }
 
   // ───── VEHICLE AVAILABILITY CALENDAR ────────────────────────
 
   @Get('vehicles/:id/availability')
-  @UseInterceptors(CacheInterceptor)
+  @UseInterceptors(HttpCacheInterceptor)
   @CacheTTL(30000)
   @ApiOperation({
     summary:
@@ -130,7 +137,7 @@ export class TransporterController {
     @Param('id') vehicleId: string,
     @Query('month') month?: string,
   ) {
-    return this.transporterService.getVehicleAvailability(vehicleId, month);
+    return this.vehicleService.getVehicleAvailability(vehicleId, month);
   }
 
   @Post('vehicles/:id/availability')
@@ -140,7 +147,7 @@ export class TransporterController {
     @Param('id') vehicleId: string,
     @Body() dto: SetAvailabilityDto,
   ) {
-    return this.transporterService.setVehicleAvailability(
+    return this.vehicleService.setVehicleAvailability(
       userId,
       vehicleId,
       dto,
@@ -150,7 +157,7 @@ export class TransporterController {
   // ───── FARMER-FACING VEHICLE BROWSE ─────────────────────────
 
   @Get('vehicles/browse')
-  @UseInterceptors(CacheInterceptor)
+  @UseInterceptors(HttpCacheInterceptor)
   @CacheTTL(30000)
   @ApiOperation({
     summary: 'Browse verified vehicles (farmer-facing, privacy-safe)',
@@ -285,7 +292,7 @@ export class TransporterController {
   @Get(':id')
   @ApiOperation({ summary: 'Get transporter by profile ID' })
   async getTransporterById(@Param('id') id: string) {
-    return this.transporterService.getTransporterById(id);
+    return this.profileService.getTransporterById(id);
   }
 
   @Post('book')

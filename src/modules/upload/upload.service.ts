@@ -10,8 +10,10 @@ export class UploadService {
     private readonly logger = new Logger(UploadService.name);
 
     constructor(private configService: ConfigService) {
-        const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
-        const supabaseKey = this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY'); // Use service key for admin uploads
+        const supabaseUrl = this.configService.get<string>('SUPABASE_URL')?.replace(/['"]/g, '').trim();
+        const supabaseKey = this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')?.replace(/['"]/g, '').trim();
+
+        this.logger.log(`Initializing Supabase with URL: [${supabaseUrl}]`);
 
         if (!supabaseUrl || !supabaseKey) {
             this.logger.warn('Supabase URL or Key is missing. Uploads will fail.');
@@ -21,48 +23,77 @@ export class UploadService {
     }
 
     /**
-     * Processes an image via Sharp to standard 1080p Webp
-     * and uploads directly to Supabase Storage.
+     * Processes an image via Sharp to specific resolutions
+     * and uploads directly to Supabase Storage structured folders.
      */
     async optimizeAndUploadImage(
-        file: Express.Multer.File,
+        file: { buffer: Buffer; originalname?: string; mimetype?: string },
         userId: string,
-        folder: string = 'general',
+        type: 'profile' | 'document' | 'vehicle' | 'machine' = 'profile',
+        isPrivate: boolean = false
     ): Promise<string> {
         try {
-            // 1. Optimize Image via Sharp
+            // 1. Determine Resolution & Folder Structure based on Spec
+            let targetWidth = 1080;
+            let folderPath = '';
+            let fileName = '';
+
+            switch (type) {
+                case 'profile':
+                    targetWidth = 300;
+                    folderPath = `profile-images/${userId}`;
+                    fileName = 'profile'; // Can be overwritten
+                    break;
+                case 'document':
+                    targetWidth = 800;
+                    folderPath = `documents/${userId}`;
+                    fileName = uuidv4();
+                    break;
+                case 'vehicle':
+                    targetWidth = 1000;
+                    folderPath = `vehicle-images/${userId}`;
+                    fileName = uuidv4();
+                    break;
+                case 'machine':
+                    targetWidth = 1000;
+                    folderPath = `machine-images/${userId}`;
+                    fileName = uuidv4();
+                    break;
+            }
+
+            // 2. Optimize Image via Sharp
             const processedBuffer = await sharp(file.buffer)
-                .resize({ width: 1080, withoutEnlargement: true }) // Max width 1080px, don't upscale small images
-                .webp({ quality: 80 }) // Convert to webp at 80% quality
+                .resize({ width: targetWidth, withoutEnlargement: true })
+                .webp({ quality: 80 })
                 .toBuffer();
 
-            // 2. Generate an overwritable filename for profiles, otherwise random
-            let filename = uuidv4();
-            if (folder === 'profiles') {
-                filename = userId;
-            }
-            const uniqueFilename = `${folder}/${filename}.webp`;
-
-            // 3. Upload to Supabase Bucket ('krushimitra-media')
+            const uniqueFilename = `${folderPath}/${fileName}.webp`;
+            const bucketName = isPrivate ? 'krushimitra-private' : 'krushimitra-media';
+            // 3. Upload to Supabase Storage
             const { data, error } = await this.supabase.storage
-                .from('krushimitra-media') // Change this to your actual bucket name
+                .from(bucketName)
                 .upload(uniqueFilename, processedBuffer, {
                     contentType: 'image/webp',
                     upsert: true,
                 });
 
             if (error) {
-                this.logger.error('Supabase upload error', error);
-                throw new InternalServerErrorException('Failed to upload image to storage');
+                this.logger.error('Supabase upload error details:', JSON.stringify(error, null, 2));
+                throw new InternalServerErrorException(`Failed to upload image to storage: ${error.message}`);
             }
 
-            // 4. Return the public URL (append cache-busting timestamp for overwritable files)
+            // 4. Return correct URL
+            if (isPrivate) {
+                // Generate 1-hour signed URL for private documents
+                return this.getSignedUrl(bucketName, uniqueFilename, 3600);
+            }
+
             const { data: publicUrlData } = this.supabase.storage
-                .from('krushimitra-media')
-                .getPublicUrl(data.path);
+                .from(bucketName)
+                .getPublicUrl(uniqueFilename);
 
             let finalUrl = publicUrlData.publicUrl;
-            if (folder === 'profiles') {
+            if (type === 'profile') {
                 finalUrl = `${finalUrl}?v=${Date.now()}`;
             }
 
@@ -71,5 +102,21 @@ export class UploadService {
             this.logger.error('Image processing failed', error);
             throw new InternalServerErrorException(`Failed to process image: ${error?.message || error}`);
         }
+    }
+
+    /**
+     * Helper to generate signed URLs for private files
+     */
+    async getSignedUrl(bucket: string, path: string, expiresInSeconds: number = 3600): Promise<string> {
+        const { data, error } = await this.supabase.storage
+            .from(bucket)
+            .createSignedUrl(path, expiresInSeconds);
+
+        if (error) {
+            this.logger.error('Failed to create signed URL', error);
+            throw new InternalServerErrorException('Failed to generate secure access token');
+        }
+
+        return data.signedUrl;
     }
 }

@@ -62,12 +62,6 @@ model User {
   role              UserRole    @default(GUEST)
   locationLat       Float?
   locationLng       Float?
-  locationAddress   String?     // Formatted address (legacy/fallback)
-  state             String?
-  district          String?
-  taluka            String?
-  village           String?
-  pincode           String?
   preferredLanguage String      @default("en")
   isVerified        Boolean     @default(false)
   fcmToken          String?     // For mobile push notifications
@@ -144,6 +138,9 @@ model TransporterProfile {
   trips           TransportTrip[]
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+
+  // Performance Indexes for geospatial proximity
+  @@index([lat, lng])
 }
 
 model TransportTrip {
@@ -167,10 +164,10 @@ model TransportTrip {
   // Performance Indexes
   @@index([transporterId])          // Fast transporter lookup
   @@index([farmerId])               // Fast farmer lookup
-  @@index([status])                 // Fast status filtering
+  @@index([status, createdAt])      // Keyset pagination for fast scrolling
   @@index([date])                   // Fast date sorting
-  @@index([transporterId, status])  // Transporter's active trips
-  @@index([farmerId, status])       // Farmer's active trips
+  @@index([transporterId, status, createdAt])  // Transporter's active trips pagination
+  @@index([farmerId, status, createdAt])       // Farmer's active trips pagination
 }
 
 model Vehicle {
@@ -206,8 +203,7 @@ model Vehicle {
   requests      TransportRequest[]
 
   @@index([transporterId])
-  @@index([type])
-  @@index([isAvailable])
+  @@index([type, isAvailable]) // Fast filtering for active vehicles
 }
 
 model Driver {
@@ -264,9 +260,9 @@ model TransportRequest {
   @@index([farmerId])
   @@index([vehicleId])
   @@index([transporterId])
-  @@index([status])
-  @@index([farmerId, status])
-  @@index([transporterId, status])
+  @@index([status, createdAt]) // Keyset Pagination Index
+  @@index([farmerId, status, createdAt]) // Keyset Pagination for farmer
+  @@index([transporterId, status, createdAt]) // Keyset Pagination for transporter
 }
 
 model Machine {
@@ -398,37 +394,3 @@ model Notification {
   @@index([createdAt])
 }
 
-model State {
-  id        String     @id @default(uuid())
-  name      String     @unique
-  districts District[]
-}
-
-model District {
-  id      String   @id @default(uuid())
-  name    String
-  state   State    @relation(fields: [stateId], references: [id])
-  stateId String
-  talukas Taluka[]
-  
-  @@unique([name, stateId])
-}
-
-model Taluka {
-  id         String     @id @default(uuid())
-  name       String
-  district   District   @relation(fields: [districtId], references: [id])
-  districtId String
-  villages   Village[]
-  
-  @@unique([name, districtId])
-}
-
-model Village {
-  id       String @id @default(uuid())
-  name     String
-  taluka   Taluka @relation(fields: [talukaId], references: [id])
-  talukaId String
-  
-  @@unique([name, talukaId])
-}

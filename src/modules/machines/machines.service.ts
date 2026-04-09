@@ -8,7 +8,7 @@ import { CreateMachineDto, MachineFilterDto } from './dto/machine.dto';
 
 @Injectable()
 export class MachinesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async createListing(ownerId: string, data: CreateMachineDto) {
     return this.prisma.machine.create({
@@ -32,87 +32,91 @@ export class MachinesService {
       lng,
       radius,
     } = filters;
-    const radiusKm = radius ?? 10;
+    const radiusKm = radius ?? 50;
 
-    const where: any = {
-      status: 'AVAILABLE',
-    };
+    let paramIndex = 1;
+    const params: any[] = [];
+    const conditions: string[] = ["m.status = 'AVAILABLE'"];
 
-    if (category) where.category = category;
-    if (brand) where.brand = brand;
-    if (listingType) where.listingType = listingType;
-    if (rentUnit) where.rentUnit = rentUnit;
+    if (category) {
+      conditions.push(`m.category = $${paramIndex++}`);
+      params.push(category);
+    }
+    if (brand) {
+      conditions.push(`m.brand = $${paramIndex++}`);
+      params.push(brand);
+    }
+    if (listingType) {
+      conditions.push(`m."listingType" = $${paramIndex++}`);
+      params.push(listingType);
+    }
+    if (rentUnit) {
+      conditions.push(`m."rentUnit" = $${paramIndex++}`);
+      params.push(rentUnit);
+    }
 
-    if (minPrice !== undefined || maxPrice !== undefined) {
-      where.price = {};
-      if (minPrice !== undefined) where.price.gte = minPrice;
-      if (maxPrice !== undefined) where.price.lte = maxPrice;
+    if (minPrice !== undefined) {
+      conditions.push(`m.price >= $${paramIndex++}`);
+      params.push(minPrice);
+    }
+    if (maxPrice !== undefined) {
+      conditions.push(`m.price <= $${paramIndex++}`);
+      params.push(maxPrice);
     }
 
     if (search) {
-      where.OR = [
-        { brand: { contains: search, mode: 'insensitive' } },
-        { model: { contains: search, mode: 'insensitive' } },
-        { category: { contains: search, mode: 'insensitive' } },
-      ];
+      conditions.push(`(
+        m.brand ILIKE $${paramIndex} OR 
+        m.model ILIKE $${paramIndex} OR 
+        m.category ILIKE $${paramIndex}
+      )`);
+      params.push(`%${search}%`);
+      paramIndex++;
     }
 
-    const machines = await this.prisma.machine.findMany({
-      where,
-      include: {
-        owner: {
-          select: {
-            name: true,
-            phoneNumber: true,
-            locationLat: true,
-            locationLng: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    let distanceSelect = 'NULL::float as "distanceKm"';
+    let distanceOrder = 'ORDER BY m."createdAt" DESC';
 
-    // If location is provided, annotate with distance and sort nearest-first
     if (lat != null && lng != null) {
-      const haversine = (
-        lat1: number,
-        lng1: number,
-        lat2: number,
-        lng2: number,
-      ): number => {
-        const R = 6371; // Earth radius in km
-        const dLat = ((lat2 - lat1) * Math.PI) / 180;
-        const dLng = ((lng2 - lng1) * Math.PI) / 180;
-        const a =
-          Math.sin(dLat / 2) ** 2 +
-          Math.cos((lat1 * Math.PI) / 180) *
-            Math.cos((lat2 * Math.PI) / 180) *
-            Math.sin(dLng / 2) ** 2;
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      };
+      const userPoint = `ST_SetSRID(ST_MakePoint(u."locationLng", u."locationLat"), 4326)`;
+      const searchPoint = `ST_SetSRID(ST_MakePoint($${paramIndex++}, $${paramIndex++}), 4326)`;
+      params.push(lng, lat);
 
-      const withDistance = machines
-        .map((m) => {
-          const ownerLat: number | null = (m.owner as any)?.locationLat ?? null;
-          const ownerLng: number | null = (m.owner as any)?.locationLng ?? null;
-          const distanceKm =
-            ownerLat != null && ownerLng != null
-              ? haversine(lat, lng, ownerLat, ownerLng)
-              : null;
-          return { ...m, distanceKm };
-        })
-        .filter((m) => m.distanceKm == null || m.distanceKm <= radiusKm)
-        .sort((a, b) => {
-          if (a.distanceKm == null && b.distanceKm == null) return 0;
-          if (a.distanceKm == null) return 1;
-          if (b.distanceKm == null) return -1;
-          return a.distanceKm - b.distanceKm;
-        });
+      const distanceCalc = `(ST_DistanceSphere(${userPoint}, ${searchPoint}) / 1000.0)`;
+      distanceSelect = `${distanceCalc} as "distanceKm"`;
 
-      return withDistance;
+      conditions.push(`${distanceCalc} <= $${paramIndex++}`);
+      params.push(radiusKm);
+
+      distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 
-    return machines;
+    const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const sql = `
+      SELECT m.*,
+             u.name as "owner_name", u."phoneNumber" as "owner_phone",
+             u."locationLat" as "owner_lat", u."locationLng" as "owner_lng",
+             ${distanceSelect}
+      FROM "Machine" m
+      JOIN "User" u ON m."ownerId" = u.id
+      ${whereClause}
+      ${distanceOrder}
+    `;
+
+    const rawMachines = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
+
+    return rawMachines.map((m) => ({
+      ...m,
+      price: Number(m.price),
+      distanceKm: m.distanceKm ?? null,
+      owner: {
+        name: m.owner_name,
+        phoneNumber: m.owner_phone,
+        locationLat: m.owner_lat,
+        locationLng: m.owner_lng,
+      }
+    }));
   }
 
   async findOne(id: string) {

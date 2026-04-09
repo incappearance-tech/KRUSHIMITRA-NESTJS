@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsNumber } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateTransporterProfileDto {
@@ -17,35 +17,15 @@ export class CreateTransporterProfileDto {
   @IsOptional()
   experience?: string;
 
-  @ApiPropertyOptional({ description: 'Base location address' })
-  @IsString()
+  @ApiPropertyOptional({ description: 'Latitude' })
+  @IsNumber()
   @IsOptional()
-  locationAddress?: string;
+  locationLat?: number;
 
-  @ApiPropertyOptional({ description: 'State' })
+  @ApiPropertyOptional({ description: 'Longitude' })
+  @IsNumber()
   @IsOptional()
-  @IsString()
-  state?: string;
-
-  @ApiPropertyOptional({ description: 'District' })
-  @IsOptional()
-  @IsString()
-  district?: string;
-
-  @ApiPropertyOptional({ description: 'Taluka' })
-  @IsOptional()
-  @IsString()
-  taluka?: string;
-
-  @ApiPropertyOptional({ description: 'Village' })
-  @IsOptional()
-  @IsString()
-  village?: string;
-
-  @ApiPropertyOptional({ description: 'Pin Code' })
-  @IsOptional()
-  @IsString()
-  pincode?: string;
+  locationLng?: number;
 }
 
-export class UpdateTransporterProfileDto extends CreateTransporterProfileDto {}
+export class UpdateTransporterProfileDto extends CreateTransporterProfileDto { }

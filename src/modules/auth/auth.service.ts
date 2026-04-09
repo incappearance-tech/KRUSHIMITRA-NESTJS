@@ -89,12 +89,7 @@ export class AuthService {
                 deviceOS: true,
                 locationLat: true,
                 locationLng: true,
-                locationAddress: true,
-                state: true,
-                district: true,
-                taluka: true,
-                village: true,
-                pincode: true,
+
                 farmerId: true,
                 // Don't fetch: auditLogs, orders, relations (saves 80% of data)
             },
@@ -134,13 +129,7 @@ export class AuthService {
                     deviceOS: true,
                     locationLat: true,
                     locationLng: true,
-                    locationAddress: true,
                     farmerId: true,
-                    state: true,
-                    district: true,
-                    taluka: true,
-                    village: true,
-                    pincode: true,
                 },
             });
         } else {
@@ -167,13 +156,7 @@ export class AuthService {
                     deviceOS: true,
                     locationLat: true,
                     locationLng: true,
-                    locationAddress: true,
                     farmerId: true,
-                    state: true,
-                    district: true,
-                    taluka: true,
-                    village: true,
-                    pincode: true,
                 },
             });
         }
@@ -217,15 +200,13 @@ export class AuthService {
             return false;
         }
 
-        // 1. Basic check: Needs Name and Location (Structured or Legacy)
-        const hasLegacyLocation = !!user.locationAddress;
-        const hasStructuredLocation =
-            !!user.state && !!user.district && (!!user.taluka || !!user.village);
+        // 1. Basic check: Needs Name and Location (GPS)
+        const hasLocation = user.locationLat !== null && user.locationLng !== null;
 
         let hasName = !!user.name;
 
         this.logger.log(
-            `isProfileComplete [${user.role}] ${user.phoneNumber}: name=${hasName}, legacyLoc=${hasLegacyLocation}, structLoc=${hasStructuredLocation}`,
+            `isProfileComplete [${user.role}] ${user.phoneNumber}: name=${hasName}, hasLocation=${hasLocation}`,
         );
 
         // 2. Role-specific profile check
@@ -235,7 +216,7 @@ export class AuthService {
                     where: { userId: user.id },
                 });
                 const isComplete =
-                    !!profile && hasName && (hasLegacyLocation || hasStructuredLocation);
+                    !!profile && hasName && hasLocation;
                 this.logger.log(
                     `isProfileComplete [LABOUR] result=${isComplete} (profileFound=${!!profile})`,
                 );
@@ -253,10 +234,9 @@ export class AuthService {
                         `isProfileComplete [TRANSPORTER]: Fallback name to businessName "${profile.businessName}"`,
                     );
                 }
-                const hasLoc = hasLegacyLocation || hasStructuredLocation;
-                const isComplete = !!profile && hasName && hasLoc;
+                const isComplete = !!profile && hasName && hasLocation;
                 this.logger.log(
-                    `isProfileComplete [TRANSPORTER]: profile=${!!profile}, name=${hasName}, loc=${hasLoc} => result=${isComplete}`,
+                    `isProfileComplete [TRANSPORTER]: profile=${!!profile}, name=${hasName}, loc=${hasLocation} => result=${isComplete}`,
                 );
                 return isComplete;
             }
@@ -268,9 +248,8 @@ export class AuthService {
             return false;
         }
 
-        // For FARMER, Name + Location (Structured or Legacy) is enough
         const farmerComplete =
-            hasName && (hasLegacyLocation || hasStructuredLocation);
+            hasName && hasLocation;
         this.logger.log(`isProfileComplete [FARMER] result=${farmerComplete}`);
         return farmerComplete;
     }
@@ -292,12 +271,6 @@ export class AuthService {
                 isVerified: true,
                 locationLat: true,
                 locationLng: true,
-                locationAddress: true,
-                state: true,
-                district: true,
-                taluka: true,
-                village: true,
-                pincode: true,
                 farmerId: true,
             },
         });
@@ -316,12 +289,6 @@ export class AuthService {
                 isVerified: true,
                 locationLat: true,
                 locationLng: true,
-                locationAddress: true,
-                state: true,
-                district: true,
-                taluka: true,
-                village: true,
-                pincode: true,
                 farmerId: true,
             },
         });
@@ -345,23 +312,11 @@ export class AuthService {
             data: {
                 locationLat: data.lat,
                 locationLng: data.lng,
-                locationAddress: data.locationAddress,
-                state: data.state,
-                district: data.district,
-                taluka: data.taluka,
-                village: data.village,
-                pincode: data.pincode,
             },
             select: {
                 id: true,
                 locationLat: true,
                 locationLng: true,
-                locationAddress: true,
-                state: true,
-                district: true,
-                taluka: true,
-                village: true,
-                pincode: true,
             },
         });
     }

@@ -166,13 +166,9 @@ export class LabourService {
 
   async upsertProfile(userId: string, dto: CreateLabourProfileDto) {
     const {
-      locationAddress,
-      state,
-      district,
-      taluka,
-      village,
-      pincode,
       name,
+      locationLat,
+      locationLng,
       ...profileData
     } = dto;
 
@@ -180,12 +176,8 @@ export class LabourService {
     await this.prisma.user.update({
       where: { id: userId },
       data: {
-        locationAddress: locationAddress || undefined,
-        state: state || undefined,
-        district: district || undefined,
-        taluka: taluka || undefined,
-        village: village || undefined,
-        pincode: pincode || undefined,
+        locationLat: locationLat !== undefined ? locationLat : undefined,
+        locationLng: locationLng !== undefined ? locationLng : undefined,
         name: name || undefined,
         role: 'LABOUR', // Upgrade from GUEST to LABOUR
       },
