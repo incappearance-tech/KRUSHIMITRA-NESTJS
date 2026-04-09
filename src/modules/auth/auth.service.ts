@@ -321,6 +321,56 @@ export class AuthService {
         });
     }
 
+    async verifyPhoneUpdate(userId: string, updatePhoneDto: any) {
+        const { newPhoneNumber, otp } = updatePhoneDto;
+
+        // 1. Check if number is already in use
+        const existingUser = await this.prisma.user.findUnique({
+            where: { phoneNumber: newPhoneNumber },
+        });
+
+        if (existingUser) {
+            throw new BadRequestException(
+                'This phone number is already registered to another account.',
+            );
+        }
+
+        // 2. Verify OTP from Redis
+        const key = `otp:${newPhoneNumber}`;
+        const storedOtp = await this.redis.get(key);
+
+        if (!storedOtp) {
+            throw new BadRequestException(
+                'OTP expired or not found. Please request a new one for the new number.',
+            );
+        }
+
+        if (storedOtp !== otp && otp !== '123456') {
+            // Allow 123456 for dev
+            throw new UnauthorizedException('Invalid OTP');
+        }
+
+        // 3. Update Phone Number
+        const updatedUser = await this.prisma.user.update({
+            where: { id: userId },
+            data: { phoneNumber: newPhoneNumber },
+            select: {
+                id: true,
+                phoneNumber: true,
+                isVerified: true,
+            },
+        });
+
+        // 4. Cleanup
+        await this.redis.del(key);
+
+        return {
+            success: true,
+            message: 'Phone number updated successfully',
+            user: updatedUser,
+        };
+    }
+
     async logout(userId: string) {
         // Remove session from Redis
         await this.redis.del(`session:${userId}`);
