@@ -49,14 +49,14 @@ export class LabourService {
 
     const [data, total] = await Promise.all([
       this.prisma.labourBooking.findMany({
-        where: { labourId: profile.id, status: { in: ['pending', 'accepted', 'completed'] } },
-        include: { farmer: { select: { name: true, phoneNumber: true } } },
+        where: { labourId: profile.id, status: 'pending' },
+        include: { farmer: { select: { name: true, phoneNumber: true, locationLat: true, locationLng: true } } },
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
       this.prisma.labourBooking.count({
-        where: { labourId: profile.id, status: { in: ['pending', 'accepted', 'completed'] } },
+        where: { labourId: profile.id, status: 'pending' },
       }),
     ]);
 
@@ -66,6 +66,84 @@ export class LabourService {
       page,
       totalPages: Math.ceil(total / limit),
     };
+  }
+
+  async getJobHistory(userId: string, page: number = 1, limit: number = 20) {
+    const profile = await this.prisma.labourProfile.findUnique({
+      where: { userId },
+    });
+    if (!profile) return { data: [], total: 0, page, totalPages: 0 };
+
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.labourBooking.findMany({
+        where: { labourId: profile.id, status: { in: ['completed', 'rejected'] } },
+        include: { farmer: { select: { name: true, phoneNumber: true, locationLat: true, locationLng: true } } },
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.labourBooking.count({
+        where: { labourId: profile.id, status: { in: ['completed', 'rejected'] } },
+      }),
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getActiveJobs(userId: string, page: number = 1, limit: number = 20) {
+    const profile = await this.prisma.labourProfile.findUnique({ where: { userId } });
+    if (!profile) return { data: [], total: 0, page, totalPages: 0 };
+
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.prisma.labourBooking.findMany({
+        where: { labourId: profile.id, status: 'accepted' },
+        include: { farmer: { select: { name: true, phoneNumber: true, locationLat: true, locationLng: true } } },
+        orderBy: { date: 'asc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.labourBooking.count({
+        where: { labourId: profile.id, status: 'accepted' },
+      }),
+    ]);
+    return { data, total, page, totalPages: Math.ceil(total / limit) };
+  }
+
+  async cancelBooking(userId: string, bookingId: string) {
+    const booking = await this.prisma.labourBooking.findUnique({ where: { id: bookingId } });
+    if (!booking) throw new NotFoundException('Booking not found');
+
+    const profile = await this.prisma.labourProfile.findUnique({ where: { userId } });
+    if (!profile || booking.labourId !== profile.id) {
+      throw new NotFoundException('You are not authorized to cancel this booking.');
+    }
+    if (booking.status !== 'accepted') {
+      throw new BadRequestException('Only accepted bookings can be cancelled.');
+    }
+
+    const updated = await this.prisma.labourBooking.update({
+      where: { id: bookingId },
+      data: { status: 'rejected' },
+      include: { farmer: { select: { name: true, phoneNumber: true } } },
+    });
+
+    this.notifications.createNotification({
+      userId: booking.farmerId,
+      title: 'Booking Cancelled',
+      message: `The labourer has cancelled their booking for ${updated.taskType}. Please find another worker.`,
+      type: 'ERROR',
+      link: '/(farmer)/labour/my-requests'
+    });
+
+    return updated;
   }
 
   async createBooking(farmerId: string, dto: CreateLabourBookingDto) {
@@ -194,6 +272,20 @@ export class LabourService {
         title: 'Booking Rejected',
         message: `Your labour booking for ${updated.taskType} was rejected.`,
         type: 'ERROR',
+        link: '/(farmer)/labour/my-requests'
+      });
+    } else if (status === 'completed') {
+      await this.prisma.labourProfile.update({
+        where: { id: booking.labourId },
+        data: {
+          jobsCompleted: { increment: 1 }
+        }
+      });
+      this.notifications.createNotification({
+        userId: booking.farmerId,
+        title: 'Job Completed',
+        message: `Your labour booking for ${updated.taskType} has been marked as completed.`,
+        type: 'SUCCESS',
         link: '/(farmer)/labour/my-requests'
       });
     }
@@ -335,11 +427,18 @@ export class LabourService {
     let distanceOrder = 'ORDER BY p."createdAt" DESC';
 
     if (filters.lat != null && filters.lng != null) {
-      const userPoint = `ST_SetSRID(ST_MakePoint(u."locationLng", u."locationLat"), 4326)`;
-      const searchPoint = `ST_SetSRID(ST_MakePoint($${paramIndex++}, $${paramIndex++}), 4326)`;
-      params.push(filters.lng, filters.lat);
+      // Haversine formula — no PostGIS extension required
+      const EARTH_RADIUS_KM = 6371;
+      const distanceCalc = `(
+        ${EARTH_RADIUS_KM} * 2 * asin(sqrt(
+          pow(sin(radians(u."locationLat" - $${paramIndex}) / 2), 2) +
+          cos(radians($${paramIndex})) * cos(radians(u."locationLat")) *
+          pow(sin(radians(u."locationLng" - $${paramIndex + 1}) / 2), 2)
+        ))
+      )`;
+      params.push(filters.lat, filters.lng);
+      paramIndex += 2;
 
-      const distanceCalc = `(ST_DistanceSphere(${userPoint}, ${searchPoint}) / 1000.0)`;
       distanceSelect = `${distanceCalc} as "distanceKm"`;
 
       conditions.push(`${distanceCalc} <= $${paramIndex++}`);

@@ -78,11 +78,18 @@ export class MachinesService {
     let distanceOrder = 'ORDER BY m."createdAt" DESC';
 
     if (lat != null && lng != null) {
-      const userPoint = `ST_SetSRID(ST_MakePoint(u."locationLng", u."locationLat"), 4326)`;
-      const searchPoint = `ST_SetSRID(ST_MakePoint($${paramIndex++}, $${paramIndex++}), 4326)`;
-      params.push(lng, lat);
+      // Haversine formula — no PostGIS extension required
+      const EARTH_RADIUS_KM = 6371;
+      const distanceCalc = `(
+        ${EARTH_RADIUS_KM} * 2 * asin(sqrt(
+          pow(sin(radians(u."locationLat" - $${paramIndex}) / 2), 2) +
+          cos(radians($${paramIndex})) * cos(radians(u."locationLat")) *
+          pow(sin(radians(u."locationLng" - $${paramIndex + 1}) / 2), 2)
+        ))
+      )`;
+      params.push(lat, lng);
+      paramIndex += 2;
 
-      const distanceCalc = `(ST_DistanceSphere(${userPoint}, ${searchPoint}) / 1000.0)`;
       distanceSelect = `${distanceCalc} as "distanceKm"`;
 
       conditions.push(`${distanceCalc} <= $${paramIndex++}`);

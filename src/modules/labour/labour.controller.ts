@@ -53,6 +53,30 @@ export class LabourController {
     return this.labourService.getLeads(req.user.id, pageNum, limitNum);
   }
 
+  @Get('history')
+  @UseGuards(JwtAuthGuard)
+  getJobHistory(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 20;
+    return this.labourService.getJobHistory(req.user.id, pageNum, limitNum);
+  }
+
+  @Get('active')
+  @UseGuards(JwtAuthGuard)
+  getActiveJobs(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 20;
+    return this.labourService.getActiveJobs(req.user.id, pageNum, limitNum);
+  }
+
   @Get('profile')
   @UseGuards(JwtAuthGuard)
   async getProfile(@GetUser('id') userId: string) {
@@ -137,6 +161,15 @@ export class LabourController {
       bookingId,
       dto.status,
     );
+  }
+
+  @Patch('leads/:id/cancel')
+  @UseGuards(JwtAuthGuard)
+  cancelBooking(
+    @Req() req: any,
+    @Param('id') bookingId: string,
+  ) {
+    return this.labourService.cancelBooking(req.user.id, bookingId);
   }
 
   @Get('details/:id')
