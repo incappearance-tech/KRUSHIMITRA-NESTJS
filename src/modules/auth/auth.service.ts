@@ -347,7 +347,7 @@ export class AuthService {
 
         if (storedOtp !== otp && otp !== '123456') {
             // Allow 123456 for dev
-            throw new UnauthorizedException('Invalid OTP');
+            throw new BadRequestException('Invalid OTP');
         }
 
         // 3. Update Phone Number
