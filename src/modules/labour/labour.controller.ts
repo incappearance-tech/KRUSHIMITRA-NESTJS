@@ -172,6 +172,15 @@ export class LabourController {
     return this.labourService.cancelBooking(req.user.id, bookingId);
   }
 
+  @Patch('requests/:id/cancel')
+  @UseGuards(JwtAuthGuard)
+  cancelFarmerRequest(
+    @GetUser('id') userId: string,
+    @Param('id') bookingId: string,
+  ) {
+    return this.labourService.cancelFarmerBooking(userId, bookingId);
+  }
+
   @Get('details/:id')
   async findOne(@Param('id') id: string) {
     return this.labourService.findOne(id);

@@ -490,6 +490,7 @@ export class AuthService {
                     where: { OR: [{ callerId: userId }, { receiverId: userId }] },
                 });
                 await tx.auditLog.deleteMany({ where: { userId } });
+                await tx.notification.deleteMany({ where: { userId } });
 
                 // 5. Delete User & Clear Redis
                 this.logger.verbose(`5. Final deletion of User record`);

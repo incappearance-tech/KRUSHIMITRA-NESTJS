@@ -146,6 +146,38 @@ export class LabourService {
     return updated;
   }
 
+  async cancelFarmerBooking(userId: string, bookingId: string) {
+    const booking = await this.prisma.labourBooking.findUnique({
+      where: { id: bookingId },
+      include: { labour: { include: { user: true } } }
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+
+    if (booking.farmerId !== userId) {
+      throw new BadRequestException('You are not authorized to cancel this booking.');
+    }
+
+    if (booking.status === 'completed' || booking.status === 'rejected') {
+      throw new BadRequestException('Cannot cancel a completed or already rejected booking.');
+    }
+
+    const updated = await this.prisma.labourBooking.update({
+      where: { id: bookingId },
+      data: { status: 'rejected' }, // Using rejected as the final state for cancelled/rejected
+    });
+
+    // Notify the labourer
+    this.notifications.createNotification({
+      userId: booking.labour.userId,
+      title: 'Booking Cancelled by Farmer',
+      message: `The farmer has cancelled their request for ${booking.taskType} on ${booking.date.toLocaleDateString()}.`,
+      type: 'WARNING',
+      link: '/(labour)/job-history'
+    });
+
+    return updated;
+  }
+
   async createBooking(farmerId: string, dto: CreateLabourBookingDto) {
     // Verify labourer profile exists
     const labour = await this.prisma.labourProfile.findUnique({
@@ -373,22 +405,7 @@ export class LabourService {
 
     const hasCoords = filters.lat != null && filters.lng != null;
 
-    if (!hasCoords) {
-      if (filters.pincode) {
-        conditions.push(`u."pincode" = $${paramIndex++}`);
-        params.push(filters.pincode);
-      }
-
-      if (filters.district) {
-        conditions.push(`u."district" ILIKE $${paramIndex++}`);
-        params.push(filters.district);
-      }
-
-      if (filters.taluka) {
-        conditions.push(`u."taluka" ILIKE $${paramIndex++}`);
-        params.push(filters.taluka);
-      }
-    }
+    // Legacy location filters (pincode, district, taluka) are removed because they were deprecated in favor of GPS-only model
 
     if (filters.skills && filters.skills.length > 0) {
       // Use the && operator for text[] array overlap check
@@ -397,20 +414,15 @@ export class LabourService {
     }
 
     if (filters.searchQuery) {
-      // Use pg_trgm similarity() for fuzzy matching
-      // Added skills search and lowered threshold to 0.2 for broader discovery
+      // Use ILIKE for search as pg_trgm similarity() might not be enabled
       conditions.push(`(
-        similarity(p."experience", $${paramIndex}) > 0.2 OR 
-        p."experience" ILIKE $${paramIndex + 1} OR 
-        similarity(u."name", $${paramIndex}) > 0.2 OR
-        u."name" ILIKE $${paramIndex + 1} OR
-        u."phoneNumber" ILIKE $${paramIndex + 1} OR
-        u."village" ILIKE $${paramIndex + 1} OR
-        EXISTS (SELECT 1 FROM unnest(p."skills") s WHERE s ILIKE $${paramIndex + 1})
+        p."experience" ILIKE $${paramIndex} OR 
+        u."name" ILIKE $${paramIndex} OR
+        u."phoneNumber" ILIKE $${paramIndex} OR
+        EXISTS (SELECT 1 FROM unnest(p."skills") s WHERE s ILIKE $${paramIndex})
       )`);
-      params.push(filters.searchQuery);
       params.push(`%${filters.searchQuery}%`);
-      paramIndex += 2;
+      paramIndex += 1;
     }
 
     if (filters.minRating !== undefined) {
