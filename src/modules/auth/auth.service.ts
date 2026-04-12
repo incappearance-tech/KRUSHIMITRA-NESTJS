@@ -68,7 +68,7 @@ export class AuthService {
         // 3. Validate OTP
         if (storedOtp !== otp && otp !== '123456') {
             // Allow 123456 for testing/dev
-            throw new UnauthorizedException('Invalid OTP');
+            throw new BadRequestException('Invalid OTP');
         }
 
         // 4. Clear OTP from Redis after success
