@@ -181,7 +181,10 @@ model Vehicle {
   ratePerKm     Decimal?           @db.Decimal(10, 2)
   isAvailable   Boolean            @default(true)
   images        String[]
-  operatingArea String?            // e.g., "Pune District, Nashik"
+  operatingArea String?            // Human-readable area label e.g. "Nagpur (50km radius)"
+  operatingRadius Int?             // km radius from vehicle GPS location
+  locationLat   Float?             // Vehicle GPS latitude for proximity search
+  locationLng   Float?             // Vehicle GPS longitude for proximity search
   rating        Float              @default(0)
   tripCount     Int                @default(0)
 
@@ -203,7 +206,8 @@ model Vehicle {
   requests      TransportRequest[]
 
   @@index([transporterId])
-  @@index([type, isAvailable]) // Fast filtering for active vehicles
+  @@index([type, isAvailable])        // Fast filtering for active vehicles
+  @@index([locationLat, locationLng]) // Geospatial proximity search
 }
 
 model Driver {

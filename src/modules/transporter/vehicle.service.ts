@@ -35,6 +35,20 @@ export class VehicleService {
             },
         });
 
+        if (dto.plan === 'free') {
+            await this.prisma.payment.create({
+                data: {
+                    userId: userId,
+                    type: 'SUBSCRIPTION',
+                    amount: 0,
+                    status: 'PAID',
+                    entityId: vehicle.id,
+                    razorpayOrderId: `FREE_${vehicle.id.slice(0, 8)}_${Date.now()}`,
+                    razorpayPaymentId: 'FREE_TRIAL',
+                }
+            });
+        }
+
         return {
             ...vehicle,
             ratePerKm: vehicle.ratePerKm ? Number(vehicle.ratePerKm) : null

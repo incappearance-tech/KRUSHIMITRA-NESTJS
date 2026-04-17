@@ -34,7 +34,7 @@ export class AuthService {
             `[OTP DEBUG] Phone: ${SecurityUtil.maskPhone(phoneNumber)}, OTP: ${otp}`,
         );
 
-        return { message: 'OTP sent successfully', debugOtp: otp };
+        return { message: 'OTP sent successfully' };
     }
 
     async verifyOtp(verifyOtpDto: VerifyOtpDto) {

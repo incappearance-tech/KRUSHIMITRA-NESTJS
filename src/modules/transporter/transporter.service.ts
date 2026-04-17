@@ -111,9 +111,13 @@ export class TransporterService {
     }
 
     if (filters.vehicleTypes && filters.vehicleTypes.length > 0) {
-      const typePlaceholders = filters.vehicleTypes.map(() => `$${paramIndex++}`).join(', ');
-      conditions.push(`v."type" IN (${typePlaceholders})`);
-      params.push(...filters.vehicleTypes);
+      // Use ILIKE partial match so "Mini Truck" filter finds
+      // "Mini Truck (Tata Ace / Bolero)" or any custom 'Other' type
+      const orClauses = filters.vehicleTypes.map(
+        () => `v."type" ILIKE $${paramIndex++}`
+      ).join(' OR ');
+      conditions.push(`(${orClauses})`);
+      params.push(...filters.vehicleTypes.map(t => `%${t}%`));
     }
 
     if (filters.searchQuery) {
