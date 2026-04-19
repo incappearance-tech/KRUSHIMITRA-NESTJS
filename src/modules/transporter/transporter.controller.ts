@@ -207,9 +207,23 @@ export class TransporterController {
   }
 
   @Get('requests/incoming')
-  @ApiOperation({ summary: 'Transporter views incoming requests' })
-  async getIncomingRequests(@GetUser('id') userId: string) {
-    return this.transporterService.getTransporterRequests(userId);
+  @ApiOperation({ summary: 'Transporter views incoming requests (optional ?statuses=SENT,SCHEDULED,COMPLETED filter)' })
+  async getIncomingRequests(
+    @GetUser('id') userId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('statuses') statuses?: string,
+  ) {
+    const pageNumber = page ? parseInt(page, 10) : 1;
+    const limitNumber = limit ? parseInt(limit, 10) : 100;
+    const statusArray = statuses ? statuses.split(',').map((s) => s.trim()) : undefined;
+    
+    return this.transporterService.getTransporterRequests({ 
+      userId, 
+      page: pageNumber, 
+      limit: limitNumber, 
+      statuses: statusArray 
+    });
   }
 
   @Get('requests/mine')
