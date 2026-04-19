@@ -93,10 +93,19 @@ export class TransporterService {
         })
       : [];
 
-    // Fetch SENT (awaiting transporter response) requests so we can warn the farmer about duplicates
     const pendingRequests = filters.userId
       ? await this.prisma.transportRequest.findMany({
           where: { farmerId: filters.userId, status: 'SENT' },
+          select: { vehicleId: true, requiredDate: true },
+        })
+      : [];
+
+    const activeRequests = filters.userId
+      ? await this.prisma.transportRequest.findMany({
+          where: { 
+            farmerId: filters.userId, 
+            status: { in: ['ACCEPTED', 'SCHEDULED', 'AWAITING_APPROVAL'] } 
+          },
           select: { vehicleId: true, requiredDate: true },
         })
       : [];
@@ -119,6 +128,16 @@ export class TransporterService {
         pendingDatesByVehicle.set(r.vehicleId, []);
       }
       pendingDatesByVehicle.get(r.vehicleId)!.push(dateStr);
+    }
+
+    // Map: vehicleId -> array of YYYY-MM-DD strings with an active request
+    const activeDatesByVehicle = new Map<string, string[]>();
+    for (const r of activeRequests) {
+      const dateStr = r.requiredDate.toISOString().split('T')[0];
+      if (!activeDatesByVehicle.has(r.vehicleId)) {
+        activeDatesByVehicle.set(r.vehicleId, []);
+      }
+      activeDatesByVehicle.get(r.vehicleId)!.push(dateStr);
     }
 
     let paramIndex = 1;
@@ -220,6 +239,27 @@ export class TransporterService {
     const countResult = await this.prisma.$queryRawUnsafe<any[]>(countSql, ...countParams);
     const total = Number(countResult[0]?.total || 0);
 
+    const vehicleIds = rawVehicles.map((v) => v.id);
+
+    // Fetch upcoming blocked dates (calendar)
+    const nowStart = new Date();
+    nowStart.setHours(0,0,0,0);
+    const blockedEntries = vehicleIds.length > 0
+      ? await this.prisma.vehicleAvailability.findMany({
+          where: { vehicleId: { in: vehicleIds }, date: { gte: nowStart }, state: { not: 'AVAILABLE' } },
+          select: { vehicleId: true, date: true, state: true }
+        })
+      : [];
+      
+    const blockedDatesByVehicle = new Map<string, { date: string, state: string }[]>();
+    for (const b of blockedEntries) {
+      if (!blockedDatesByVehicle.has(b.vehicleId)) blockedDatesByVehicle.set(b.vehicleId, []);
+      blockedDatesByVehicle.get(b.vehicleId)!.push({
+        date: b.date.toISOString().split('T')[0],
+        state: b.state
+      });
+    }
+
     const mapped = rawVehicles.map((v) => ({
       ...v,
       ratePerKm: v.ratePerKm ? Number(v.ratePerKm) : null,
@@ -239,6 +279,10 @@ export class TransporterService {
       rejectedDates: rejectedDatesByVehicle.get(v.id) ?? [],
       // Dates (YYYY-MM-DD) this farmer already has a pending (SENT) request on this vehicle
       pendingDates: pendingDatesByVehicle.get(v.id) ?? [],
+      // Dates (YYYY-MM-DD) this farmer already has an active request on this vehicle
+      activeDates: activeDatesByVehicle.get(v.id) ?? [],
+      // Dates the transporter manually marked as busy/maintenance/etc
+      blockedDates: blockedDatesByVehicle.get(v.id) ?? [],
     }));
 
     return {

@@ -39,7 +39,7 @@ export class TransporterProfileService {
         };
     }
 
-    async getTransporterById(id: string) {
+    async getTransporterById(id: string, userId?: string) {
         const profile = await this.prisma.transporterProfile.findUnique({
             where: { id },
             include: { user: true, vehicles: true },
@@ -49,7 +49,54 @@ export class TransporterProfileService {
         const tripsCompleted = await this.prisma.transportRequest.count({
             where: { transporterId: profile.id, status: 'COMPLETED' },
         });
-        return { ...profile, tripsCompleted };
+
+        // Fetch upcoming blocked dates (calendar)
+        const nowStart = new Date();
+        nowStart.setHours(0,0,0,0);
+        const vehicleIds = profile.vehicles.map(v => v.id);
+        const blockedEntries = vehicleIds.length > 0
+          ? await this.prisma.vehicleAvailability.findMany({
+              where: { vehicleId: { in: vehicleIds }, date: { gte: nowStart }, state: { not: 'AVAILABLE' } },
+              select: { vehicleId: true, date: true, state: true }
+            })
+          : [];
+          
+        const blockedDatesByVehicle = new Map<string, { date: string, state: string }[]>();
+        for (const b of blockedEntries) {
+          if (!blockedDatesByVehicle.has(b.vehicleId)) blockedDatesByVehicle.set(b.vehicleId, []);
+          blockedDatesByVehicle.get(b.vehicleId)!.push({
+            date: b.date.toISOString().split('T')[0],
+            state: b.state
+          });
+        }
+
+        // Fetch user's active requests if userId provided
+        const activeRequests = userId && vehicleIds.length > 0
+            ? await this.prisma.transportRequest.findMany({
+                where: { 
+                  farmerId: userId, 
+                  vehicleId: { in: vehicleIds },
+                  status: { in: ['ACCEPTED', 'SCHEDULED', 'AWAITING_APPROVAL'] }
+                },
+                select: { vehicleId: true, requiredDate: true }
+              })
+            : [];
+            
+        const activeDatesByVehicle = new Map<string, string[]>();
+        for (const r of activeRequests) {
+          if (!activeDatesByVehicle.has(r.vehicleId)) activeDatesByVehicle.set(r.vehicleId, []);
+          activeDatesByVehicle.get(r.vehicleId)!.push(r.requiredDate.toISOString().split('T')[0]);
+        }
+
+        return { 
+            ...profile, 
+            tripsCompleted,
+            vehicles: profile.vehicles.map(v => ({
+                ...v,
+                blockedDates: blockedDatesByVehicle.get(v.id) || [],
+                activeDates: activeDatesByVehicle.get(v.id) || []
+            }))
+        };
     }
 
     async upsertProfile(userId: string, dto: CreateTransporterProfileDto) {

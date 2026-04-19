@@ -305,8 +305,8 @@ export class TransporterController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get transporter by profile ID' })
-  async getTransporterById(@Param('id') id: string) {
-    return this.profileService.getTransporterById(id);
+  async getTransporterById(@Param('id') id: string, @GetUser('id') userId: string) {
+    return this.profileService.getTransporterById(id, userId);
   }
 
   @Post('book')
