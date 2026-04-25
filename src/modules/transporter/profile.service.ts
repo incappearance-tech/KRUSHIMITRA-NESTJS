@@ -9,7 +9,7 @@ import { CreateTransporterProfileDto } from './dto/transporter-profile.dto';
 export class TransporterProfileService {
     constructor(private prisma: PrismaService) { }
 
-    async getProfile(userId: string) {
+    async getProfile(userId: string, today?: string) {
         const profile = await this.prisma.transporterProfile.findUnique({
             where: { userId },
             include: { user: true, vehicles: true },
@@ -21,12 +21,25 @@ export class TransporterProfileService {
             return { user, profile: null };
         }
 
-        const leadsReceived = await this.prisma.transportRequest.count({
-            where: { transporterId: profile.id },
-        });
-        const tripsCompleted = await this.prisma.transportRequest.count({
-            where: { transporterId: profile.id, status: 'COMPLETED' },
-        });
+        const [leadsReceived, tripsCompleted] = await Promise.all([
+            this.prisma.transportRequest.count({ where: { transporterId: profile.id } }),
+            this.prisma.transportRequest.count({ where: { transporterId: profile.id, status: 'COMPLETED' } }),
+        ]);
+
+        // Resolve today's calendar availability for each vehicle
+        const todayDate = today
+            ? (() => { const d = new Date(today); d.setUTCHours(0,0,0,0); return d; })()
+            : (() => { const d = new Date(); d.setUTCHours(0,0,0,0); return d; })();
+
+        const vehicleIds = profile.vehicles.map(v => v.id);
+        const todayEntries = vehicleIds.length > 0
+            ? await this.prisma.vehicleAvailability.findMany({
+                where: { vehicleId: { in: vehicleIds }, date: todayDate },
+                select: { vehicleId: true, state: true },
+              })
+            : [];
+
+        const todayStateByVehicle = new Map(todayEntries.map(e => [e.vehicleId, e.state]));
 
         return {
             ...profile,
@@ -34,8 +47,10 @@ export class TransporterProfileService {
             tripsCompleted,
             vehicles: profile.vehicles.map(v => ({
                 ...v,
-                ratePerKm: v.ratePerKm ? Number(v.ratePerKm) : null
-            }))
+                ratePerKm: v.ratePerKm ? Number(v.ratePerKm) : null,
+                // Calendar entry for today takes priority over the global isAvailable flag
+                availabilityState: todayStateByVehicle.get(v.id) ?? (v.isAvailable === false ? 'BUSY' : 'AVAILABLE'),
+            })),
         };
     }
 

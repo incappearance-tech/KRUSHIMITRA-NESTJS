@@ -12,6 +12,7 @@ import { CancelRequestDto } from './dto/cancel-request.dto';
 import { ConfirmSuggestionDto } from './dto/confirm-suggestion.dto';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { TransportRequestCreatedEvent } from '../../events/types/system.events';
 
 @Injectable()
 export class TransporterService {
@@ -365,7 +366,10 @@ export class TransporterService {
     const farmer = await this.prisma.user.findUnique({ where: { id: farmerId } });
     if (!farmer) throw new NotFoundException('Farmer not found');
 
-    const vehicle = await this.prisma.vehicle.findUnique({ where: { id: dto.vehicleId } });
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where: { id: dto.vehicleId },
+      include: { transporter: { select: { userId: true } } },
+    });
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
     const now = new Date();
@@ -415,7 +419,15 @@ export class TransporterService {
       }
     });
 
-    this.eventEmitter.emit('transport.request.created', { requestId: newReq.id });
+    this.eventEmitter.emit(
+      'transport.request.created',
+      new TransportRequestCreatedEvent(
+        newReq.id,
+        farmerId,
+        dto.vehicleId,
+        vehicle.transporter.userId,
+      ),
+    );
     return newReq;
   }
 
@@ -507,8 +519,8 @@ export class TransporterService {
     }
 
     if (dto.action === 'accept') {
-      const date = new Date(request.requiredDate);
-      date.setHours(0, 0, 0, 0);
+      const reqDate = new Date(request.requiredDate);
+      const date = new Date(Date.UTC(reqDate.getUTCFullYear(), reqDate.getUTCMonth(), reqDate.getUTCDate()));
       await this.prisma.vehicleAvailability.upsert({
         where: { vehicleId_date: { vehicleId: request.vehicleId, date } },
         create: { vehicleId: request.vehicleId, date, state: 'BUSY' },
@@ -599,6 +611,21 @@ export class TransporterService {
         where: { id: requestId },
         data: { status: 'COMPLETED' },
       });
+
+      // Reset vehicle status to AVAILABLE — both the calendar entry and the global flag
+      const rawDate = request.suggestedDate ? new Date(request.suggestedDate) : new Date(request.requiredDate);
+      const dateToFree = new Date(Date.UTC(rawDate.getUTCFullYear(), rawDate.getUTCMonth(), rawDate.getUTCDate()));
+      await Promise.all([
+        this.prisma.vehicleAvailability.updateMany({
+          where: { vehicleId: request.vehicleId, date: dateToFree },
+          data: { state: 'AVAILABLE' },
+        }),
+        this.prisma.vehicle.update({
+          where: { id: request.vehicleId },
+          data: { isAvailable: true },
+        }),
+      ]).catch(e => console.error('Failed to reset vehicle availability on completion', e));
+
       // Find transporter's userId to notify them
       const transporterProfile = await this.prisma.transporterProfile.findUnique({
         where: { id: request.transporterId },
@@ -639,16 +666,18 @@ export class TransporterService {
 
     // If the trip was already scheduled and is now cancelled, free up the vehicle's availability
     if (['SCHEDULED', 'ACCEPTED', 'AWAITING_APPROVAL'].includes(request.status)) {
-      const dateToFree = request.suggestedDate ? new Date(request.suggestedDate) : new Date(request.requiredDate);
-      dateToFree.setHours(0, 0, 0, 0);
-      try {
-        await this.prisma.vehicleAvailability.updateMany({
+      const rawDate = request.suggestedDate ? new Date(request.suggestedDate) : new Date(request.requiredDate);
+      const dateToFree = new Date(Date.UTC(rawDate.getUTCFullYear(), rawDate.getUTCMonth(), rawDate.getUTCDate()));
+      await Promise.all([
+        this.prisma.vehicleAvailability.updateMany({
           where: { vehicleId: request.vehicleId, date: dateToFree },
-          data: { state: 'AVAILABLE' }
-        });
-      } catch (e) {
-        console.error('Failed to free vehicle availability on cancel', e);
-      }
+          data: { state: 'AVAILABLE' },
+        }),
+        this.prisma.vehicle.update({
+          where: { id: request.vehicleId },
+          data: { isAvailable: true },
+        }),
+      ]).catch(e => console.error('Failed to reset vehicle availability on cancel', e));
     }
 
     // Notify the other party
@@ -698,8 +727,8 @@ export class TransporterService {
 
     if (dto.accept) {
       // Mark vehicle as BUSY on the new suggested date
-      const date = new Date(request.suggestedDate);
-      date.setHours(0, 0, 0, 0);
+      const reqDate = new Date(request.suggestedDate);
+      const date = new Date(Date.UTC(reqDate.getUTCFullYear(), reqDate.getUTCMonth(), reqDate.getUTCDate()));
       await this.prisma.vehicleAvailability.upsert({
         where: { vehicleId_date: { vehicleId: request.vehicleId, date } },
         create: { vehicleId: request.vehicleId, date, state: 'BUSY' },

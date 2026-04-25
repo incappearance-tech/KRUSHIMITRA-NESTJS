@@ -98,9 +98,9 @@ export class VehicleService {
     async getVehicleAvailability(vehicleId: string, month?: string) {
         const where: any = { vehicleId };
         if (month) {
-            const start = new Date(`${month}-01`);
-            const end = new Date(start);
-            end.setMonth(end.getMonth() + 1);
+            const [y, m] = month.split('-').map(Number);
+            const start = new Date(Date.UTC(y, m - 1, 1));
+            const end = new Date(Date.UTC(y, m, 1));
             where.date = { gte: start, lt: end };
         }
         return this.prisma.vehicleAvailability.findMany({
@@ -118,8 +118,9 @@ export class VehicleService {
         });
         if (!vehicle) throw new ForbiddenException('Vehicle not found or not yours');
 
-        const date = new Date(dto.date);
-        date.setHours(0, 0, 0, 0);
+        // Parse YYYY-MM-DD directly into UTC midnight to avoid server timezone shifts
+        const [year, mon, day] = dto.date.split('-').map(Number);
+        const date = new Date(Date.UTC(year, mon - 1, day));
 
         return this.prisma.vehicleAvailability.upsert({
             where: { vehicleId_date: { vehicleId, date } },

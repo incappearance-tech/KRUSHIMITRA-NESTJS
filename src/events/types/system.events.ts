@@ -3,7 +3,7 @@ export class TransportRequestCreatedEvent {
         public readonly requestId: string,
         public readonly farmerId: string,
         public readonly vehicleId: string,
-        public readonly distanceKm: number,
+        public readonly transporterUserId: string,
     ) { }
 }
 

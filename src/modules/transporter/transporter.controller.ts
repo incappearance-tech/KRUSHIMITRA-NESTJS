@@ -41,9 +41,12 @@ export class TransporterController {
   // ───── PROFILE ─────────────────────────────────────────────
 
   @Get('profile')
-  @ApiOperation({ summary: 'Get own transporter profile' })
-  async getProfile(@GetUser('id') userId: string) {
-    return this.profileService.getProfile(userId);
+  @ApiOperation({ summary: 'Get own transporter profile. Pass ?today=YYYY-MM-DD to get today\'s calendar availability per vehicle.' })
+  async getProfile(
+    @GetUser('id') userId: string,
+    @Query('today') today?: string,
+  ) {
+    return this.profileService.getProfile(userId, today);
   }
 
   @Post('profile')
