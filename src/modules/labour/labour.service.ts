@@ -10,6 +10,7 @@ import {
 } from './dto/labour-profile.dto';
 import { CreateLabourBookingDto } from './dto/labour-booking.dto';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { haversineKm, haversineSql } from '../../common/utils/haversine.util';
 
 @Injectable()
 export class LabourService {
@@ -38,34 +39,42 @@ export class LabourService {
     return this.LABOUR_TYPES;
   }
 
+  // haversineKm imported from shared utility — no local copy needed
+
   async getLeads(userId: string, page: number = 1, limit: number = 20) {
-    // Find labourer's profile
-    const profile = await this.prisma.labourProfile.findUnique({
-      where: { userId },
-    });
+    const profile = await this.prisma.labourProfile.findUnique({ where: { userId } });
     if (!profile) return { data: [], total: 0, page, totalPages: 0 };
 
     const skip = (page - 1) * limit;
 
-    const [data, total] = await Promise.all([
+    const [bookings, total] = await Promise.all([
       this.prisma.labourBooking.findMany({
         where: { labourId: profile.id, status: 'pending' },
-        include: { farmer: { select: { name: true, phoneNumber: true, locationLat: true, locationLng: true } } },
+        include: {
+          farmer: { select: { name: true, phoneNumber: true, locationLat: true, locationLng: true } },
+        },
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
-      this.prisma.labourBooking.count({
-        where: { labourId: profile.id, status: 'pending' },
-      }),
+      this.prisma.labourBooking.count({ where: { labourId: profile.id, status: 'pending' } }),
     ]);
 
-    return {
-      data,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
-    };
+    // Compute distance server-side — labourer sees how far the farm is
+    // LabourProfile uses lat/lng (User model uses locationLat/locationLng)
+    const labLat = profile.lat ?? null;
+    const labLng = profile.lng ?? null;
+
+    const data = bookings.map(b => ({
+      ...b,
+      distanceKm:
+        labLat != null && labLng != null &&
+        b.farmer?.locationLat != null && b.farmer?.locationLng != null
+          ? Math.round(haversineKm(labLat, labLng, b.farmer.locationLat!, b.farmer.locationLng!) * 10) / 10
+          : null,
+    }));
+
+    return { data, total, page, totalPages: Math.ceil(total / limit) };
   }
 
   async getJobHistory(userId: string, page: number = 1, limit: number = 20) {
@@ -439,23 +448,16 @@ export class LabourService {
     let distanceOrder = 'ORDER BY p."createdAt" DESC';
 
     if (filters.lat != null && filters.lng != null) {
-      // Haversine formula — no PostGIS extension required
-      const EARTH_RADIUS_KM = 6371;
-      const distanceCalc = `(
-        ${EARTH_RADIUS_KM} * 2 * asin(sqrt(
-          pow(sin(radians(u."locationLat" - $${paramIndex}) / 2), 2) +
-          cos(radians($${paramIndex})) * cos(radians(u."locationLat")) *
-          pow(sin(radians(u."locationLng" - $${paramIndex + 1}) / 2), 2)
-        ))
-      )`;
+      const distanceCalc = haversineSql(
+        'u."locationLat"', 'u."locationLng"',
+        `$${paramIndex}`, `$${paramIndex + 1}`,
+      );
       params.push(filters.lat, filters.lng);
       paramIndex += 2;
 
       distanceSelect = `${distanceCalc} as "distanceKm"`;
-
       conditions.push(`${distanceCalc} <= $${paramIndex++}`);
-      params.push(filters.radius || 50);
-
+      params.push(filters.radius ?? 50);
       distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 

@@ -100,9 +100,11 @@ export class MachinesService {
 
     const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
+    // phoneNumber is NOT selected in browse — privacy protection (DPDP compliance)
+    // It is only revealed on the detail page after a booking is confirmed
     const sql = `
       SELECT m.*,
-             u.name as "owner_name", u."phoneNumber" as "owner_phone",
+             u.name as "owner_name",
              u."locationLat" as "owner_lat", u."locationLng" as "owner_lng",
              ${distanceSelect}
       FROM "Machine" m
@@ -119,7 +121,7 @@ export class MachinesService {
       distanceKm: m.distanceKm ?? null,
       owner: {
         name: m.owner_name,
-        phoneNumber: m.owner_phone,
+        // phoneNumber intentionally omitted from browse results
         locationLat: m.owner_lat,
         locationLng: m.owner_lng,
       }

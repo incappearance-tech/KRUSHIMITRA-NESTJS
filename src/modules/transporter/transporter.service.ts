@@ -5,6 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreateTransportRequestDto } from './dto/create-transport-request.dto';
 import { RespondRequestDto } from './dto/respond-request.dto';
@@ -12,6 +13,7 @@ import { CancelRequestDto } from './dto/cancel-request.dto';
 import { ConfirmSuggestionDto } from './dto/confirm-suggestion.dto';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { haversineSql } from '../../common/utils/haversine.util';
 import { TransportRequestCreatedEvent } from '../../events/types/system.events';
 
 @Injectable()
@@ -182,23 +184,16 @@ export class TransporterService {
     let distanceOrder = 'ORDER BY v."createdAt" DESC';
 
     if (filters.lat != null && filters.lng != null) {
-      // Haversine formula — no PostGIS extension required
-      const EARTH_RADIUS_KM = 6371;
-      const distanceCalc = `(
-        ${EARTH_RADIUS_KM} * 2 * asin(sqrt(
-          pow(sin(radians(u."locationLat" - $${paramIndex}) / 2), 2) +
-          cos(radians($${paramIndex})) * cos(radians(u."locationLat")) *
-          pow(sin(radians(u."locationLng" - $${paramIndex + 1}) / 2), 2)
-        ))
-      )`;
+      const distanceCalc = haversineSql(
+        'u."locationLat"', 'u."locationLng"',
+        `$${paramIndex}`, `$${paramIndex + 1}`,
+      );
       params.push(filters.lat, filters.lng);
       paramIndex += 2;
 
       distanceSelect = `${distanceCalc} as "distanceKm"`;
-
       conditions.push(`${distanceCalc} <= $${paramIndex++}`);
-      params.push(filters.radius || 50);
-
+      params.push(filters.radius ?? 50);
       distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 
@@ -301,15 +296,10 @@ export class TransporterService {
     let distanceOrder = 'ORDER BY p."createdAt" DESC';
 
     if (lat != null && lng != null) {
-      // Haversine formula — no PostGIS extension required
-      const EARTH_RADIUS_KM = 6371;
-      const distanceCalc = `(
-        ${EARTH_RADIUS_KM} * 2 * asin(sqrt(
-          pow(sin(radians(u."locationLat" - $${paramIndex}) / 2), 2) +
-          cos(radians($${paramIndex})) * cos(radians(u."locationLat")) *
-          pow(sin(radians(u."locationLng" - $${paramIndex + 1}) / 2), 2)
-        ))
-      )`;
+      const distanceCalc = haversineSql(
+        'u."locationLat"', 'u."locationLng"',
+        `$${paramIndex}`, `$${paramIndex + 1}`,
+      );
       params.push(lat, lng);
       paramIndex += 2;
 
@@ -323,9 +313,11 @@ export class TransporterService {
 
     const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
+    // phoneNumber excluded from browse — DPDP privacy protection
+    // Phone is only revealed after a booking is ACCEPTED/SCHEDULED/COMPLETED
     const sql = `
       SELECT p.*,
-             u.name as "user_name", u."phoneNumber" as "user_phone",
+             u.name as "user_name",
              u."locationLat" as "user_lat", u."locationLng" as "user_lng",
              ${distanceSelect}
       FROM "TransporterProfile" p
@@ -345,7 +337,7 @@ export class TransporterService {
       distanceKm: p.distanceKm ?? null,
       user: {
         name: p.user_name,
-        phoneNumber: p.user_phone,
+        // phoneNumber intentionally omitted from browse — shared after booking
         locationLat: p.user_lat,
         locationLng: p.user_lng,
       },
@@ -431,15 +423,27 @@ export class TransporterService {
     return newReq;
   }
 
-  async getTransporterRequests({ userId, page = 1, limit = 100, statuses }: any) {
+  async getTransporterRequests({
+    userId,
+    page = 1,
+    limit = 100,
+    statuses,
+  }: {
+    userId: string;
+    page?: number;
+    limit?: number;
+    statuses?: string[];
+  }) {
     const skip = (page - 1) * limit;
     const profile = await this.prisma.transporterProfile.findUnique({ where: { userId } });
     if (!profile) return { data: [], meta: { total: 0, page, limit, hasMore: false } };
 
-    const whereClause: any = { transporterId: profile.id };
-    if (statuses && statuses.length > 0) {
-      whereClause.status = { in: statuses.map((s: string) => s.toUpperCase()) };
-    }
+    const whereClause: Prisma.TransportRequestWhereInput = {
+      transporterId: profile.id,
+      status: statuses?.length
+        ? { in: statuses.map(s => s.toUpperCase()) as Prisma.EnumTransportRequestStatusFilter['in'] }
+        : undefined,
+    };
 
     const [total, requests] = await this.prisma.$transaction([
       this.prisma.transportRequest.count({ where: whereClause }),
@@ -455,6 +459,31 @@ export class TransporterService {
       })
     ]);
 
+    // For each request, fetch the booked dates of its vehicle so the
+    // transporter's date-picker can grey them out when suggesting a new date
+    const vehicleIds = [...new Set(requests.map(r => r.vehicleId))];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const bookedRows = vehicleIds.length > 0
+      ? await this.prisma.transportRequest.findMany({
+          where: {
+            vehicleId: { in: vehicleIds },
+            status: { in: ['SCHEDULED', 'ACCEPTED'] },
+            requiredDate: { gte: today },
+          },
+          select: { vehicleId: true, requiredDate: true, suggestedDate: true },
+        })
+      : [];
+
+    // vehicleId → Set of YYYY-MM-DD booked date strings
+    const bookedByVehicle = new Map<string, Set<string>>();
+    for (const row of bookedRows) {
+      if (!bookedByVehicle.has(row.vehicleId)) bookedByVehicle.set(row.vehicleId, new Set());
+      const d = row.suggestedDate ?? row.requiredDate;
+      bookedByVehicle.get(row.vehicleId)!.add(d.toISOString().split('T')[0]);
+    }
+
     const mappedData = requests.map((req) => ({
       ...req,
       farmer: {
@@ -463,6 +492,8 @@ export class TransporterService {
           ? req.farmer.phoneNumber
           : undefined,
       },
+      // Array of YYYY-MM-DD strings where this vehicle is already booked
+      vehicleBookedDates: [...(bookedByVehicle.get(req.vehicleId) ?? [])],
     }));
 
     return {
@@ -476,31 +507,70 @@ export class TransporterService {
     };
   }
 
-  async getFarmerRequests({ farmerId, page = 1, limit = 100, statuses }: any) {
+  async getFarmerRequests({
+    farmerId,
+    page = 1,
+    limit = 100,
+    statuses,
+  }: {
+    farmerId: string;
+    page?: number;
+    limit?: number;
+    statuses?: string[];
+  }) {
     const skip = (page - 1) * limit;
-    const whereClause: any = { farmerId };
-    if (statuses?.length > 0) whereClause.status = { in: statuses.map((s: string) => s.toUpperCase()) };
+
+    const where: Prisma.TransportRequestWhereInput = {
+      farmerId,
+      status: statuses?.length
+        ? { in: statuses.map(s => s.toUpperCase()) as Prisma.EnumTransportRequestStatusFilter['in'] }
+        : undefined,
+    };
 
     const requests = await this.prisma.transportRequest.findMany({
-      where: whereClause,
-      include: {
+      where,
+      // Flat select instead of 3-level nested include — eliminates N+1 query chains
+      select: {
+        id: true,
+        status: true,
+        pickup: true,
+        drop: true,
+        crop: true,
+        quantity: true,
+        requiredDate: true,
+        suggestedDate: true,
+        cancellationReason: true,
+        createdAt: true,
+        updatedAt: true,
         vehicle: {
-          include: {
-            transporter: { include: { user: { select: { name: true, phoneNumber: true } } } }
-          }
-        }
+          select: {
+            id: true,
+            type: true,
+            model: true,
+            capacity: true,
+            operatingArea: true,
+            transporter: {
+              select: {
+                user: { select: { name: true, phoneNumber: true } },
+              },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
     });
 
-    return requests.map((req) => ({
+    const PHONE_VISIBLE_STATUSES = new Set(['SCHEDULED', 'ACCEPTED', 'COMPLETED']);
+
+    return requests.map(req => ({
       ...req,
       transporter: {
-        name: req.vehicle.transporter.user.name,
-        phoneNumber: ['SCHEDULED', 'ACCEPTED', 'COMPLETED'].includes(req.status)
-          ? req.vehicle.transporter.user.phoneNumber
+        name: req.vehicle?.transporter?.user?.name ?? null,
+        // Privacy gate — phone only after booking confirmed
+        phoneNumber: PHONE_VISIBLE_STATUSES.has(req.status)
+          ? (req.vehicle?.transporter?.user?.phoneNumber ?? null)
           : null,
       },
     }));
@@ -555,7 +625,53 @@ export class TransporterService {
       if (!dto.suggestedDate) throw new BadRequestException('suggestedDate is required for suggest action');
       const suggestedDateParsed = new Date(dto.suggestedDate);
       if (isNaN(suggestedDateParsed.getTime())) throw new BadRequestException('Invalid suggestedDate format. Use YYYY-MM-DD.');
-      if (suggestedDateParsed < new Date()) throw new BadRequestException('Suggested date must be in the future');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (suggestedDateParsed < today) throw new BadRequestException('Suggested date must be today or in the future');
+
+      // Must suggest a DIFFERENT date from the farmer's original request
+      const reqDateNorm = new Date(Date.UTC(
+        request.requiredDate.getUTCFullYear(),
+        request.requiredDate.getUTCMonth(),
+        request.requiredDate.getUTCDate(),
+      ));
+      const sugNorm = new Date(Date.UTC(
+        suggestedDateParsed.getUTCFullYear(),
+        suggestedDateParsed.getUTCMonth(),
+        suggestedDateParsed.getUTCDate(),
+      ));
+      if (sugNorm.getTime() === reqDateNorm.getTime()) {
+        const dateLabel = reqDateNorm.toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+        });
+        throw new BadRequestException(
+          `${dateLabel} is the farmer's original requested date. Please suggest a different date.`,
+        );
+      }
+
+      // Check if vehicle is already booked (SCHEDULED/ACCEPTED) on the suggested date
+      const dayStart = new Date(Date.UTC(suggestedDateParsed.getUTCFullYear(), suggestedDateParsed.getUTCMonth(), suggestedDateParsed.getUTCDate()));
+      const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+      const conflict = await this.prisma.transportRequest.findFirst({
+        where: {
+          vehicleId: request.vehicleId,
+          id: { not: requestId }, // exclude the current request
+          status: { in: ['SCHEDULED', 'ACCEPTED'] },
+          OR: [
+            { requiredDate: { gte: dayStart, lt: dayEnd } },
+            { suggestedDate: { gte: dayStart, lt: dayEnd } },
+          ],
+        },
+      });
+      if (conflict) {
+        const dateLabel = dayStart.toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+        });
+        throw new BadRequestException(
+          `Vehicle is already booked on ${dateLabel}. Please choose a different date.`,
+        );
+      }
+
       const updated = await this.prisma.transportRequest.update({ where: { id: requestId }, data: { suggestedDate: suggestedDateParsed } });
       // Notify farmer — transporter suggested a new date
       this.notifications.createNotification({

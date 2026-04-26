@@ -25,6 +25,36 @@ export class VehicleService {
             );
         }
 
+        // ── Duplicate number-plate guard ──────────────────────────────────────
+        if (dto.numberPlate) {
+            const plateTaken = await this.prisma.vehicle.findFirst({
+                where: {
+                    transporterId: profile.id,
+                    numberPlate: { equals: dto.numberPlate.trim(), mode: 'insensitive' },
+                },
+            });
+            if (plateTaken) {
+                throw new BadRequestException(
+                    `A vehicle with number plate "${dto.numberPlate}" is already in your fleet.`,
+                );
+            }
+        }
+
+        // ── Duplicate driver phone guard ──────────────────────────────────────
+        if (dto.driverPhone) {
+            const phoneTaken = await this.prisma.vehicle.findFirst({
+                where: {
+                    transporterId: profile.id,
+                    driverPhone: dto.driverPhone.trim(),
+                },
+            });
+            if (phoneTaken) {
+                throw new BadRequestException(
+                    `A driver with mobile number "${dto.driverPhone}" is already assigned to another vehicle in your fleet.`,
+                );
+            }
+        }
+
         const { expiryDate, ...vehicleData } = dto;
 
         const vehicle = await this.prisma.vehicle.create({
@@ -56,6 +86,25 @@ export class VehicleService {
     }
 
     async updateVehicle(userId: string, vehicleId: string, dto: Partial<CreateVehicleDto>) {
+        // ── Duplicate driver phone guard (edit) ───────────────────────────────
+        if (dto.driverPhone) {
+            const profile = await this.prisma.transporterProfile.findUnique({ where: { userId } });
+            if (profile) {
+                const phoneTaken = await this.prisma.vehicle.findFirst({
+                    where: {
+                        transporterId: profile.id,
+                        id: { not: vehicleId },          // exclude the vehicle being edited
+                        driverPhone: dto.driverPhone.trim(),
+                    },
+                });
+                if (phoneTaken) {
+                    throw new BadRequestException(
+                        `A driver with mobile number "${dto.driverPhone}" is already assigned to another vehicle (${phoneTaken.model}) in your fleet.`,
+                    );
+                }
+            }
+        }
+
         const { expiryDate, ...vehicleData } = dto;
 
         const vehicle = await this.prisma.vehicle.update({
@@ -79,20 +128,39 @@ export class VehicleService {
         if (!vehicle) throw new NotFoundException('Vehicle not found');
 
         const now = new Date();
+
+        // Block deletion of vehicles that still have an active paid subscription
         if (vehicle.expiryDate && vehicle.expiryDate > now) {
-            throw new BadRequestException('Cannot delete vehicle with an active subscription');
+            throw new BadRequestException(
+                'Cannot delete a vehicle with an active subscription. Please wait until it expires.',
+            );
         }
 
+        // Block deletion if there are any upcoming active bookings
         const futureRequests = await this.prisma.transportRequest.count({
             where: {
                 vehicleId,
                 requiredDate: { gte: now },
-                status: { in: ['SENT', 'ACCEPTED', 'SCHEDULED'] },
+                status: { in: ['SENT', 'ACCEPTED', 'SCHEDULED', 'AWAITING_APPROVAL'] },
             },
         });
-        if (futureRequests > 0) throw new BadRequestException('Cannot delete vehicle with future bookings');
+        if (futureRequests > 0) {
+            throw new BadRequestException(
+                'Cannot delete vehicle — it has active or upcoming bookings.',
+            );
+        }
 
-        return this.prisma.vehicle.delete({ where: { id: vehicleId } });
+        // Cascade delete all related records in a transaction
+        // (plain vehicle.delete() fails with FK constraint when related rows exist)
+        await this.prisma.$transaction([
+            this.prisma.vehicleAvailability.deleteMany({ where: { vehicleId } }),
+            this.prisma.driver.deleteMany({ where: { vehicleId } }),
+            // Historical requests are kept for audit — only unlink if schema allows null; otherwise delete
+            this.prisma.transportRequest.deleteMany({ where: { vehicleId } }),
+            this.prisma.vehicle.delete({ where: { id: vehicleId } }),
+        ]);
+
+        return { success: true };
     }
 
     async getVehicleAvailability(vehicleId: string, month?: string) {

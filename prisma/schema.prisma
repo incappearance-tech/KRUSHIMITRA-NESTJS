@@ -265,9 +265,12 @@ model TransportRequest {
   @@index([farmerId])
   @@index([vehicleId])
   @@index([transporterId])
-  @@index([status, createdAt]) // Keyset Pagination Index
-  @@index([farmerId, status, createdAt]) // Keyset Pagination for farmer
-  @@index([transporterId, status, createdAt]) // Keyset Pagination for transporter
+  @@index([status, createdAt])                        // Keyset pagination
+  @@index([farmerId, status, createdAt])              // Farmer's trip list
+  @@index([transporterId, status, createdAt])         // Transporter's trip list
+  @@index([vehicleId, requiredDate])                  // Calendar availability checks (getVehicleAvailability)
+  @@index([farmerId, vehicleId, status])              // Duplicate booking guard (createTransportRequest)
+  @@index([transporterId, status])                    // Transporter dashboard counts
 }
 
 model Machine {
@@ -349,6 +352,9 @@ model LabourBooking {
   @@index([farmerId])
   @@index([labourId])
   @@index([status])
+  @@index([labourId, status])                // Labour incoming jobs — pending filter
+  @@index([farmerId, status])                // Farmer's active labour requests
+  @@index([labourId, status, createdAt])     // Labour history pagination
 }
 
 model Payment {

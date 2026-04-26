@@ -102,8 +102,12 @@ export class PaymentsService {
   async verifyPayment(userId: string, dto: VerifyPaymentDto) {
     const keySecret = this.config.get<string>('RAZORPAY_KEY_SECRET') ?? '';
 
-    // Allow mock signatures in dev mode
+    // Mock payments allowed when: not production OR ALLOW_DEV_OTP=true (for local testing)
+    const isDev =
+      this.config.get('NODE_ENV') !== 'production' ||
+      this.config.get('ALLOW_DEV_OTP') === 'true';
     const isMockPayment =
+      isDev &&
       dto.razorpayPaymentId.startsWith('pay_mock_') &&
       dto.razorpaySignature === 'mock_signature';
 
@@ -113,7 +117,16 @@ export class PaymentsService {
         .update(`${dto.razorpayOrderId}|${dto.razorpayPaymentId}`)
         .digest('hex');
 
-      if (generatedSig !== dto.razorpaySignature) {
+      // Timing-safe comparison prevents side-channel extraction of key secret
+      const sigMatch = (() => {
+        try {
+          return crypto.timingSafeEqual(
+            Buffer.from(generatedSig, 'hex'),
+            Buffer.from(dto.razorpaySignature ?? '', 'hex'),
+          );
+        } catch { return false; }
+      })();
+      if (!sigMatch) {
         // ✅ FIX #6 — Mark payment FAILED on bad signature
         await this.prisma.payment.updateMany({
           where: { razorpayOrderId: dto.razorpayOrderId, userId },
@@ -255,8 +268,17 @@ export class PaymentsService {
       .update(rawBody)
       .digest('hex');
 
-    if (expectedSignature !== signature) {
-      this.logger.warn(`Invalid webhook signature. Expected ${expectedSignature.slice(0, 8)}...`);
+    // Timing-safe comparison prevents side-channel attacks on webhook secret
+    const sigValid = (() => {
+      try {
+        return crypto.timingSafeEqual(
+          Buffer.from(expectedSignature, 'hex'),
+          Buffer.from(signature ?? '', 'hex'),
+        );
+      } catch { return false; }
+    })();
+    if (!sigValid) {
+      this.logger.warn(`Invalid webhook signature from Razorpay`);
       throw new BadRequestException('Invalid signature');
     }
 

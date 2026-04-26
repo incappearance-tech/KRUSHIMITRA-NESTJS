@@ -40,9 +40,9 @@ export class CryptoUtil {
       decrypted += decipher.final('utf8');
 
       return JSON.parse(decrypted);
-    } catch (error) {
-      console.error('Decryption failed:', error.message);
-      throw new Error(`Decryption failed: ${error.message}`);
+    } catch {
+      // Do NOT log or expose error.message — it may contain key/payload data
+      throw new Error('Decryption failed');
     }
   }
 
@@ -75,8 +75,7 @@ export class CryptoUtil {
       ].join(':');
 
       return Buffer.from(finalPayload).toString('base64');
-    } catch (error) {
-      console.error('Encryption failed:', error.message);
+    } catch {
       throw new Error('Encryption failed');
     }
   }

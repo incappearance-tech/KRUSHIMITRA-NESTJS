@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { ConfigService } from '@nestjs/config';
+import * as crypto from 'crypto';
 import { HmacUtil } from '../utils/hmac.util';
 
 @Injectable()
@@ -66,54 +67,25 @@ export class SignatureMiddleware implements NestMiddleware {
       );
       const expectedSig = HmacUtil.generateSignature(payload, secret);
 
-      // Constant-time comparison to prevent timing attacks
-      if (expectedSig === signature) {
-        isValid = true;
-        usedPath = p;
-        break;
+      // Timing-safe comparison prevents timing side-channel attacks
+      try {
+        const a = Buffer.from(expectedSig);
+        const b = Buffer.from(signature.padEnd(expectedSig.length, '\0'));
+        if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+          isValid = true;
+          usedPath = p;
+          break;
+        }
+      } catch {
+        // Buffer length mismatch — signature is invalid
       }
     }
 
     if (!isValid) {
-      this.logger.error(
-        `Invalid signature. Tried paths: ${pathsToTry.join(', ')}`,
+      // Log only non-sensitive metadata — never log secrets, signatures, or body
+      this.logger.warn(
+        `Signature mismatch: method=${req.method} path=${normalizedPath} ip=${req.ip}`,
       );
-
-      // Debug Logging
-      const debugPayload = HmacUtil.createSignaturePayload(
-        req.method,
-        normalizedPath,
-        timestamp,
-        nonce,
-        body,
-      );
-      const expectedSignature = HmacUtil.generateSignature(
-        debugPayload,
-        secret,
-      );
-
-      const fs = require('fs');
-      const debugInfo = `
-=========================================
-Time: ${new Date().toISOString()}
-OriginalUrl: ${req.originalUrl}
-Normalized Path: ${normalizedPath}
-Raw Path: ${req.path}
-Method: ${req.method}
-Timestamp: ${timestamp}
-Nonce: ${nonce}
-Body Type: ${typeof req.body}
-Body: ${body}
-Received Signature: ${signature}
-Expected (Normalized): ${expectedSignature}
-Shared Secret Prefix: ${secret.substring(0, 5)}
-Paths Tried: ${JSON.stringify(pathsToTry)}
-=========================================
-`;
-      try {
-        fs.writeFileSync('debug_signature_error.txt', debugInfo);
-      } catch (e) { }
-
       throw new UnauthorizedException('Invalid request signature');
     }
 

@@ -5,6 +5,7 @@ import {
     Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { RedisService } from '../../database/redis/redis.service';
 import { VerifyOtpDto } from './dto/auth.dto';
@@ -15,11 +16,19 @@ import { User } from '@prisma/client';
 export class AuthService {
     private readonly logger = new Logger(AuthService.name);
 
+    private readonly isDev: boolean;
+
     constructor(
         private prisma: PrismaService,
         private jwtService: JwtService,
         private redis: RedisService,
-    ) { }
+        private config: ConfigService,
+    ) {
+        // isDev is true when NOT production, OR when ALLOW_DEV_OTP=true (for local testing against prod DB)
+        this.isDev =
+            this.config.get('NODE_ENV') !== 'production' ||
+            this.config.get('ALLOW_DEV_OTP') === 'true';
+    }
 
     async requestOtp(phoneNumber: string) {
         // 1. Generate 6 digit OTP
@@ -29,10 +38,11 @@ export class AuthService {
         const key = `otp:${phoneNumber}`;
         await this.redis.set(key, otp, 300);
 
-        // 3. Mock sending logic (In production, trigger SMS gateway here)
-        this.logger.debug(
-            `[OTP DEBUG] Phone: ${SecurityUtil.maskPhone(phoneNumber)}, OTP: ${otp}`,
-        );
+        // In production: send OTP via SMS gateway (Exotel, MSG91, etc.)
+        // In dev: log masked phone only — never log the actual OTP value
+        if (this.isDev) {
+            this.logger.debug(`[DEV] OTP generated for ${SecurityUtil.maskPhone(phoneNumber)}`);
+        }
 
         return { message: 'OTP sent successfully' };
     }
@@ -65,9 +75,9 @@ export class AuthService {
             );
         }
 
-        // 3. Validate OTP
-        if (storedOtp !== otp && otp !== '123456') {
-            // Allow 123456 for testing/dev
+        // 3. Validate OTP — dev bypass (123456) ONLY in non-production
+        const isDevBypass = this.isDev && otp === '123456';
+        if (storedOtp !== otp && !isDevBypass) {
             throw new BadRequestException('Invalid OTP');
         }
 
@@ -195,7 +205,7 @@ export class AuthService {
         }
         if (user.role === 'GUEST') {
             this.logger.log(
-                `isProfileComplete: User ${user.phoneNumber} is GUEST, incomplete`,
+                `isProfileComplete: User ${user.id} is GUEST, incomplete`,
             );
             return false;
         }
@@ -206,7 +216,7 @@ export class AuthService {
         let hasName = !!user.name;
 
         this.logger.log(
-            `isProfileComplete [${user.role}] ${user.phoneNumber}: name=${hasName}, hasLocation=${hasLocation}`,
+            `isProfileComplete [${user.role}] userId=${user.id}: name=${hasName}, hasLocation=${hasLocation}`,
         );
 
         // 2. Role-specific profile check
@@ -345,8 +355,8 @@ export class AuthService {
             );
         }
 
-        if (storedOtp !== otp && otp !== '123456') {
-            // Allow 123456 for dev
+        const isDevBypassPhone = this.isDev && otp === '123456';
+        if (storedOtp !== otp && !isDevBypassPhone) {
             throw new BadRequestException('Invalid OTP');
         }
 
