@@ -48,6 +48,19 @@ enum NotificationType {
   CALL_LOG
 }
 
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentType {
+  LISTING_FEE
+  CALL_FEE
+  SUBSCRIPTION
+}
+
 enum ListingStatus {
   AVAILABLE
   SOLD
@@ -205,10 +218,12 @@ model Vehicle {
   drivers       Driver[]
   availability  VehicleAvailability[]
   requests      TransportRequest[]
+  subscriptions Subscription[]       // full renewal history
 
   @@index([transporterId])
   @@index([type, isAvailable])        // Fast filtering for active vehicles
   @@index([locationLat, locationLng]) // Geospatial proximity search
+  @@index([expiryDate])               // Subscription expiry cron queries
 }
 
 model Driver {
@@ -361,16 +376,82 @@ model Payment {
   id                  String   @id @default(uuid())
   user                User     @relation(fields: [userId], references: [id])
   userId              String
-  type                String   // LISTING_FEE, CALL_FEE, SUBSCRIPTION
+
+  // String (not enum) to allow safe migration of existing rows.
+  // Enforce valid values at service layer with FEE_TABLE / SUBSCRIPTION_PLANS.
+  // Valid values: LISTING_FEE | CALL_FEE | SUBSCRIPTION
+  type                String
+
   amount              Decimal  @db.Decimal(10, 2)
-  razorpayOrderId     String?
+  razorpayOrderId     String?  @unique
   razorpayPaymentId   String?
-  status              String   @default("PENDING") // PENDING, PAID, FAILED
-  entityId            String?  // machineId / vehicleId etc.
+
+  // String (not enum) so existing PENDING/PAID/FAILED rows don't need a cast.
+  // Valid values: PENDING | PAID | FAILED | REFUNDED
+  status              String   @default("PENDING")
+
+  entityId            String?  // machineId / vehicleId — links payment to the asset
+  description         String?  // Human-readable label for admin panel
+  metadata            Json?    // Raw gateway response for forensics
+  upiMethod           String?  // "Google Pay", "PhonePe", "Manual UPI", etc.
+  upiTxnRef           String?  // UPI transaction ref from gateway
   createdAt           DateTime @default(now())
+  // @default(now()) seeds the column for the 9 existing rows during migration
+  updatedAt           DateTime @default(now()) @updatedAt
+
+  // Relations
+  subscription        Subscription?
 
   @@index([userId])
   @@index([status])
+  @@index([type])
+  @@index([entityId])
+  @@index([createdAt])
+  @@index([razorpayOrderId])
+  @@index([userId, status])
+  @@index([type, status])
+  @@index([status, createdAt])
+}
+
+// Tracks one active subscription period per vehicle.
+// A new Subscription row is created on each payment/renewal.
+// Full renewal history = multiple rows with same vehicleId.
+model Subscription {
+  id             String    @id @default(uuid())
+  vehicleId      String
+  vehicle        Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  paymentId      String    @unique
+  payment        Payment   @relation(fields: [paymentId], references: [id])
+  plan           String    // monthly | quarterly | yearly
+  startDate      DateTime
+  endDate        DateTime
+  renewalCount   Int       @default(0)   // how many times this vehicle has been renewed
+  expiryNotified Boolean   @default(false)  // true after 7-day warning sent
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([vehicleId])
+  @@index([endDate])                   // "expiring soon" cron query
+  @@index([plan])                      // plan-level analytics
+  @@index([expiryNotified, endDate])   // cron: find un-notified expiring subs
+}
+
+// Immutable audit log of every Razorpay webhook event received.
+// Enables replays, dispute resolution, and duplicate detection.
+model WebhookLog {
+  id          String   @id @default(uuid())
+  event       String   // "payment.captured", "payment.failed", etc.
+  orderId     String?  // razorpay order_id extracted from payload
+  paymentId   String?  // razorpay payment_id extracted from payload
+  payload     Json     // full raw webhook body
+  processed   Boolean  @default(false)
+  errorMsg    String?  // set if processing threw
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+  @@index([event])
+  @@index([processed])
+  @@index([createdAt])
 }
 
 model CallLog {

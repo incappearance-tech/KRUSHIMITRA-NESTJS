@@ -37,7 +37,14 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
 
-  // Preserve raw body for Razorpay webhook verification via Fastify plugin
+  // rawBody MUST be registered before multipart — Razorpay webhook HMAC verification
+  // reads req.rawBody. If this runs after multipart, the body stream is already consumed.
+  await app.register(rawBody as any, {
+    global: true,     // expose rawBody on every request
+    encoding: 'utf8', // webhook payload is UTF-8 JSON string
+    runFirst: true,   // parse before any other body parser
+  });
+
   // Multipart handling for Fastify (Replaces Multer)
   await app.register(require('@fastify/multipart'), {
     limits: {
