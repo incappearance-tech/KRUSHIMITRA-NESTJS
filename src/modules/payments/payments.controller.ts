@@ -78,6 +78,14 @@ export class PaymentsController {
     return this.paymentsService.getPaymentStatus(userId, orderId);
   }
 
+  // ── Public: Fee Configuration (Live Prices) ─────────────────────────────────
+  @Get('fee-config')
+  @Public()
+  @ApiOperation({ summary: 'Get live dynamic pricing from FeeConfig table' })
+  getFeeConfig() {
+    return this.paymentsService.getFeeConfig();
+  }
+
   // ── User: Subscription plan catalogue ──────────────────────────────────────
   @Get('plans')
   @UseGuards(JwtAuthGuard)

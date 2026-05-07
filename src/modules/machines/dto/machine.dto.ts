@@ -14,6 +14,20 @@ export enum ListingType {
   RENT = 'RENT',
 }
 
+export class CreateMachinePaymentDto {
+  @ApiProperty()
+  @IsString()
+  razorpayPaymentId: string;
+
+  @ApiProperty()
+  @IsString()
+  razorpayOrderId: string;
+
+  @ApiProperty()
+  @IsString()
+  razorpaySignature: string;
+}
+
 export class CreateMachineDto {
   @ApiProperty({ description: 'Category of the machine', example: 'Tractor' })
   @IsString()
@@ -49,12 +63,33 @@ export class CreateMachineDto {
   price: number;
 
   @ApiPropertyOptional({
-    description: 'Rent unit (e.g., HOURLY, DAILY)',
-    example: 'HOURLY',
+    description: 'Pricing unit (e.g., PER_HOUR, PER_DAY, PER_ACRE)',
+    example: 'PER_HOUR',
   })
   @IsOptional()
   @IsString()
-  rentUnit?: string;
+  pricingUnit?: string;
+
+  @ApiPropertyOptional({
+    description: 'Whether the price is negotiable',
+    example: true,
+  })
+  @IsOptional()
+  isNegotiable?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  plan?: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Array of manual busy dates',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  busyDates?: string[];
 
   @ApiProperty({
     description: 'Array of image URLs',
@@ -63,6 +98,10 @@ export class CreateMachineDto {
   @IsArray()
   @IsString({ each: true })
   images: string[];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  paymentDetails?: CreateMachinePaymentDto;
 }
 
 export class MachineFilterDto {
@@ -101,10 +140,10 @@ export class MachineFilterDto {
   @Type(() => Number)
   maxPrice?: number;
 
-  @ApiPropertyOptional({ description: 'Filter by rent unit' })
+  @ApiPropertyOptional({ description: 'Filter by pricing unit' })
   @IsOptional()
   @IsString()
-  rentUnit?: string;
+  pricingUnit?: string;
 
   @ApiPropertyOptional({ description: 'Caller latitude for proximity sort' })
   @IsOptional()
@@ -126,4 +165,16 @@ export class MachineFilterDto {
   @IsNumber()
   @Type(() => Number)
   radius?: number;
+
+  @ApiPropertyOptional({ description: 'Number of records to skip for pagination' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  skip?: number;
+
+  @ApiPropertyOptional({ description: 'Number of records to take for pagination' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  take?: number;
 }

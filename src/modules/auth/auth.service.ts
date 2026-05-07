@@ -475,9 +475,7 @@ export class AuthService {
                 });
                 const machineIds = userMachines.map((m) => m.id);
 
-                this.logger.debug(
-                    `Deleting orders involving the user or their machines`,
-                );
+                this.logger.debug(`Deleting orders involving the user or their machines`);
                 await tx.order.deleteMany({
                     where: {
                         OR: [
@@ -487,6 +485,31 @@ export class AuthService {
                         ],
                     },
                 });
+
+                this.logger.debug(`Deleting rental requests involving the user or their machines`);
+                if (machineIds.length > 0) {
+                    await tx.rentalRequest.deleteMany({
+                        where: {
+                            OR: [
+                                { ownerId: userId },
+                                { borrowerId: userId },
+                                { machineId: { in: machineIds } },
+                            ],
+                        },
+                    });
+                } else {
+                    await tx.rentalRequest.deleteMany({
+                        where: {
+                            OR: [
+                                { ownerId: userId },
+                                { borrowerId: userId },
+                            ],
+                        },
+                    });
+                }
+
+                this.logger.debug(`Deleting subscriptions`);
+                await tx.subscription.deleteMany({ where: { userId } });
 
                 this.logger.debug(`Deleting machines`);
                 await tx.machine.deleteMany({ where: { ownerId: userId } });

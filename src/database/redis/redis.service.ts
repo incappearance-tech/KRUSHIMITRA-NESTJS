@@ -36,7 +36,7 @@ export class RedisService implements OnModuleDestroy {
         }
         return false;
       },
-      connectTimeout: 10000,
+      connectTimeout: 20000,
     });
 
     this.client.on('error', (err: any) => {

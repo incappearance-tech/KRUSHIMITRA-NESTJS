@@ -58,6 +58,7 @@ import { AppLoggerModule } from './common/logger/logger.module';
               return Math.min(retries * 100, 3000);
             },
             keepAlive: 10000,
+            connectTimeout: 20000,
           },
           password: configService.get('REDIS_PASSWORD'),
           ttl: 60 * 1000,
@@ -94,6 +95,7 @@ import { AppLoggerModule } from './common/logger/logger.module';
             ...(config.get('REDIS_HOST') !== 'localhost' && {
               tls: { servername: config.get('REDIS_HOST') }
             }),
+            connectTimeout: 20000,
           })
         ),
       }),
@@ -117,6 +119,7 @@ import { AppLoggerModule } from './common/logger/logger.module';
           maxRetriesPerRequest: null, // Critical for BullMQ
           enableReadyCheck: false,
           keepAlive: 10000,
+          connectTimeout: 20000,
           reconnectOnError: (err) => {
             const targetError = 'READONLY';
             if (err.message.includes(targetError)) return true;

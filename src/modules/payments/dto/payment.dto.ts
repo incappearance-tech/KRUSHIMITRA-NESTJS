@@ -14,27 +14,66 @@ import { Type } from 'class-transformer';
 
 export class CreatePaymentOrderDto {
   @ApiProperty({
-    description: 'Payment type',
-    enum: ['LISTING_FEE', 'CALL_FEE', 'SUBSCRIPTION'],
+    description: 'DEPRECATED: Use feature instead. Kept for backward compatibility.',
   })
   @IsString()
-  @IsIn(['LISTING_FEE', 'CALL_FEE', 'SUBSCRIPTION'])
-  type: string;
+  @IsOptional()
+  type?: string;
+
+  @ApiProperty({
+    description: 'Feature being paid for (e.g. MACHINE_LISTING_BASIC, VEHICLE_SUBSCRIPTION_MONTHLY)',
+  })
+  @IsString()
+  @IsNotEmpty()
+  feature: string;
+
+  @ApiPropertyOptional({
+    description: 'Plan tier if applicable (e.g. basic, pro, monthly)',
+  })
+  @IsString()
+  @IsOptional()
+  planTier?: string;
 
   @ApiProperty({ description: 'Amount in paise (e.g. 49900 = ₹499)', example: 49900 })
   @IsNumber()
-  @Min(0)   // 0 is valid for free listings
+  @Min(0)
   amount: number;
 
-  @ApiPropertyOptional({ description: 'Entity ID (machineId, vehicleId, etc.)' })
+  @ApiPropertyOptional({
+    description: 'Who is paying — FARMER | TRANSPORTER | LABOUR (default: derived from JWT)',
+    enum: ['FARMER', 'TRANSPORTER', 'LABOUR'],
+  })
+  @IsString()
+  @IsOptional()
+  @IsIn(['FARMER', 'TRANSPORTER', 'LABOUR'])
+  role?: string;
+
+  @ApiPropertyOptional({
+    description: 'What entity this payment is for',
+    example: 'machine-uuid-here',
+  })
   @IsString()
   @IsOptional()
   entityId?: string;
 
-  @ApiPropertyOptional({ description: 'Human-readable description for admin panel' })
+  @ApiPropertyOptional({
+    description: 'Type of entity — MACHINE | VEHICLE | CONTACT | PROFILE',
+    enum: ['MACHINE', 'VEHICLE', 'CONTACT', 'PROFILE'],
+  })
+  @IsString()
+  @IsOptional()
+  @IsIn(['MACHINE', 'VEHICLE', 'CONTACT', 'PROFILE'])
+  entityType?: string;
+
+  @ApiPropertyOptional({ description: 'Human-readable description shown in admin panel' })
   @IsString()
   @IsOptional()
   description?: string;
+
+  @ApiPropertyOptional({ description: 'Payment method — UPI | CARD | NETBANKING | FREE' })
+  @IsString()
+  @IsOptional()
+  paymentMethod?: string;
 }
 
 export class VerifyPaymentDto {
@@ -76,11 +115,20 @@ export class AdminPaymentsQueryDto {
   @IsIn(['PENDING', 'PAID', 'FAILED', 'REFUNDED'])
   status?: string;
 
-  @ApiPropertyOptional({ enum: ['LISTING_FEE', 'CALL_FEE', 'SUBSCRIPTION'] })
+  @ApiPropertyOptional({ description: 'Legacy type filter' })
   @IsString()
   @IsOptional()
-  @IsIn(['LISTING_FEE', 'CALL_FEE', 'SUBSCRIPTION'])
   type?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by feature (e.g., MACHINE_LISTING)' })
+  @IsString()
+  @IsOptional()
+  feature?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by role (e.g., FARMER, TRANSPORTER)' })
+  @IsString()
+  @IsOptional()
+  role?: string;
 
   @ApiPropertyOptional({ description: 'Filter by userId' })
   @IsString()
