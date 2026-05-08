@@ -11,12 +11,13 @@ export class RedisService implements OnModuleDestroy {
     // Remove protocol if present (common user error)
     host = host.replace(/^https?:\/\//, '').replace(/^redis:\/\//, '');
 
-    const port = this.configService.get<number>('REDIS_PORT', 6379);
-    const password = this.configService.get<string>('REDIS_PASSWORD');
+    const port     = this.configService.get<number>('REDIS_PORT', 6379);
+    const password = this.configService.get<string>('REDIS_PASSWORD') || undefined;
 
-    // Auto-enable TLS for Upstash/Production
-    const isRemote = host !== 'localhost';
-    const tlsOptions = isRemote ? { servername: host } : undefined;
+    // REDIS_TLS=true  → Upstash / production  (requires TLS + SNI)
+    // REDIS_TLS=false → Docker localhost / dev (plain TCP, no auth)
+    const tlsEnabled = this.configService.get<string>('REDIS_TLS') === 'true';
+    const tlsOptions = tlsEnabled ? { servername: host } : undefined;
 
     this.client = new Redis({
       host,

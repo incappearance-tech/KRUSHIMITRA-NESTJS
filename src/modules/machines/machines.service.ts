@@ -122,7 +122,11 @@ export class MachinesService {
 
     let paramIndex = 1;
     const params: any[] = [];
-    const conditions: string[] = ["m.status = 'AVAILABLE'"];
+    const conditions: string[] = [
+      "m.status = 'AVAILABLE'",
+      // Only show machines with an active plan (free = no expiry, paid = not yet expired)
+      "(m.\"planExpiresAt\" IS NULL OR m.\"planExpiresAt\" > NOW())",
+    ];
 
     if (category) {
       conditions.push(`m.category ILIKE $${paramIndex++}`);

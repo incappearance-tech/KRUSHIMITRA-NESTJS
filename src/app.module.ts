@@ -48,11 +48,12 @@ import { AppLoggerModule } from './common/logger/logger.module';
       isGlobal: true,
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => {
+        const tlsEnabled = configService.get('REDIS_TLS') === 'true';
         const store = await redisStore({
           socket: {
             host: configService.get('REDIS_HOST'),
             port: parseInt(configService.get('REDIS_PORT') || '6379'),
-            tls: configService.get('REDIS_HOST') !== 'localhost',
+            tls: tlsEnabled,
             reconnectStrategy: (retries) => {
               // Exponential backoff with a cap at 3 seconds
               return Math.min(retries * 100, 3000);
@@ -60,7 +61,7 @@ import { AppLoggerModule } from './common/logger/logger.module';
             keepAlive: 10000,
             connectTimeout: 20000,
           },
-          password: configService.get('REDIS_PASSWORD'),
+          password: configService.get('REDIS_PASSWORD') || undefined,
           ttl: 60 * 1000,
         });
 
@@ -89,10 +90,10 @@ import { AppLoggerModule } from './common/logger/logger.module';
         }],
         storage: new ThrottlerStorageRedisService(
           new Redis({
-            host: config.get('REDIS_HOST'),
-            port: parseInt(config.get('REDIS_PORT') || '6379'),
-            password: config.get('REDIS_PASSWORD'),
-            ...(config.get('REDIS_HOST') !== 'localhost' && {
+            host:     config.get('REDIS_HOST'),
+            port:     parseInt(config.get('REDIS_PORT') || '6379'),
+            password: config.get('REDIS_PASSWORD') || undefined,
+            ...(config.get('REDIS_TLS') === 'true' && {
               tls: { servername: config.get('REDIS_HOST') }
             }),
             connectTimeout: 20000,
@@ -108,13 +109,11 @@ import { AppLoggerModule } from './common/logger/logger.module';
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         connection: {
-          host: configService.get('REDIS_HOST'),
-          port: configService.get('REDIS_PORT'),
-          password: configService.get('REDIS_PASSWORD'),
-          ...(configService.get('REDIS_HOST') !== 'localhost' && {
-            tls: {
-              servername: configService.get('REDIS_HOST'),
-            },
+          host:     configService.get('REDIS_HOST'),
+          port:     configService.get('REDIS_PORT'),
+          password: configService.get('REDIS_PASSWORD') || undefined,
+          ...(configService.get('REDIS_TLS') === 'true' && {
+            tls: { servername: configService.get('REDIS_HOST') },
           }),
           maxRetriesPerRequest: null, // Critical for BullMQ
           enableReadyCheck: false,

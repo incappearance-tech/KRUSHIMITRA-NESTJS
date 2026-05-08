@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# KrushiMitra — Local Development Services
+#
+# Runs ONLY Redis (and Postgres if you prefer local DB).
+# The NestJS API runs directly on your machine for fast hot-reload.
+#
+# Usage:
+#   docker-compose -f docker-compose.dev.yml up -d     # start
+#   docker-compose -f docker-compose.dev.yml down      # stop
+#   docker-compose -f docker-compose.dev.yml logs -f   # logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── Redis 7.2 (no auth, no TLS — development only) ───────────────────────────
+  # BullMQ requires Redis >= 6.2.0 (uses LMPOP/ZMPOP commands)
+  # Pinned to 7.2 for reproducibility — do NOT change to 5.x or 6.0.x
+  redis:
+    image: redis:7.2-alpine
+    container_name: krushimitra_redis_dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis_dev_data:
+    name: krushimitra_redis_dev_data
