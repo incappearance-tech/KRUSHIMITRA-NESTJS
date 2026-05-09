@@ -163,6 +163,81 @@ export class VehicleService {
         return { success: true };
     }
 
+    /** Public vehicle details for farmers — no phone until booking accepted.
+     *  When userId is provided, also returns per-vehicle availability dates for that farmer. */
+    async getVehiclePublicDetails(vehicleId: string, userId?: string) {
+        const vehicle = await this.prisma.vehicle.findUnique({
+            where: { id: vehicleId },
+            include: {
+                transporter: {
+                    select: {
+                        id:              true,
+                        businessName:    true,
+                        operatingRadius: true,
+                        experience:      true,
+                        lat:             true,
+                        lng:             true,
+                        user: {
+                            select: {
+                                id:          true,
+                                name:        true,
+                                locationLat: true,
+                                locationLng: true,
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+        let pendingDates: string[]                            = [];
+        let rejectedDates: string[]                           = [];
+        let activeDates: string[]                             = [];
+        let blockedDates: { date: string; state: string }[]  = [];
+
+        if (userId) {
+            const [rejected, pending, active] = await Promise.all([
+                this.prisma.transportRequest.findMany({
+                    where: { farmerId: userId, vehicleId, status: 'REJECTED' },
+                    select: { requiredDate: true },
+                }),
+                this.prisma.transportRequest.findMany({
+                    where: { farmerId: userId, vehicleId, status: 'SENT' },
+                    select: { requiredDate: true },
+                }),
+                this.prisma.transportRequest.findMany({
+                    where: { farmerId: userId, vehicleId, status: { in: ['ACCEPTED', 'SCHEDULED', 'AWAITING_APPROVAL'] } },
+                    select: { requiredDate: true },
+                }),
+            ]);
+
+            rejectedDates = rejected.map(r => r.requiredDate.toISOString().split('T')[0]);
+            pendingDates  = pending.map(r => r.requiredDate.toISOString().split('T')[0]);
+            activeDates   = active.map(r => r.requiredDate.toISOString().split('T')[0]);
+
+            const nowStart = new Date();
+            nowStart.setHours(0, 0, 0, 0);
+            const blocked = await this.prisma.vehicleAvailability.findMany({
+                where: { vehicleId, date: { gte: nowStart }, state: { not: 'AVAILABLE' } },
+                select: { date: true, state: true },
+            });
+            blockedDates = blocked.map(b => ({
+                date:  b.date.toISOString().split('T')[0],
+                state: b.state,
+            }));
+        }
+
+        return {
+            ...vehicle,
+            ratePerKm:    vehicle.ratePerKm != null ? Number(vehicle.ratePerKm) : null,
+            pendingDates,
+            rejectedDates,
+            activeDates,
+            blockedDates,
+        };
+    }
+
     async getVehicleAvailability(vehicleId: string, month?: string) {
         const where: any = { vehicleId };
         if (month) {

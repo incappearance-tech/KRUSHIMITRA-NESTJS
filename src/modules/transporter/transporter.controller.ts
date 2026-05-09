@@ -157,7 +157,17 @@ export class TransporterController {
     );
   }
 
-  // ───── FARMER-FACING VEHICLE BROWSE ─────────────────────────
+  // ───── FARMER-FACING VEHICLE BROWSE & DETAIL ────────────────
+
+  /** Get single vehicle's public details — farmer views before booking */
+  @Get('vehicles/:vehicleId/public')
+  @ApiOperation({ summary: 'Get a single vehicle with transporter info (public, no phone). Includes availability dates for the requesting farmer.' })
+  async getVehiclePublicDetails(
+    @Param('vehicleId') vehicleId: string,
+    @GetUser('id') userId: string,
+  ) {
+    return this.vehicleService.getVehiclePublicDetails(vehicleId, userId);
+  }
 
   @Get('vehicles/browse')
   @UseInterceptors(HttpCacheInterceptor)
