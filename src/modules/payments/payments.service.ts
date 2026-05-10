@@ -170,11 +170,9 @@ export class PaymentsService implements OnModuleInit {
   async verifyPayment(userId: string, dto: VerifyPaymentDto) {
     const keySecret = this.config.get<string>('RAZORPAY_KEY_SECRET') ?? '';
 
-    const isDev =
-      this.config.get('NODE_ENV') !== 'production' ||
-      this.config.get('ALLOW_DEV_OTP') === 'true';
+    const isDevPayment = this.config.get('NODE_ENV') !== 'production';
     const isMock =
-      isDev &&
+      isDevPayment &&
       dto.razorpayPaymentId.startsWith('pay_mock_') &&
       dto.razorpaySignature === 'mock_signature';
 

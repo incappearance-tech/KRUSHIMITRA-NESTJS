@@ -1,0 +1,11 @@
+const crypto = require('crypto');
+const timestamp = Date.now().toString();
+const nonce = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+const secret = process.env.HMAC_SHARED_SECRET || 'KrushimitraSecure2026!#HmacSecret$%ProductionKey';
+const payload = 'POST|/auth/otp/request|' + timestamp + '|' + nonce + '|{"phoneNumber":"+919876543210"}';
+const hmac = crypto.createHmac('sha256', secret);
+hmac.update(payload);
+const signature = hmac.digest('base64');
+console.log('TIMESTAMP:', timestamp);
+console.log('NONCE:', nonce);
+console.log('SIGNATURE:', signature);

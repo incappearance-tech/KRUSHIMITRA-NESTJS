@@ -45,20 +45,20 @@ async function bootstrap() {
   //     stream before @fastify/multipart can parse it, causing req.file() to return
   //     undefined and the "No file provided" error on /upload routes.
   await app.register(rawBody as any, {
-    global:   false,    // opt-in only — don't consume body on every route
+    global: false,    // opt-in only — don't consume body on every route
     encoding: 'utf8',   // webhook payload is UTF-8 JSON string
     runFirst: true,     // capture before any preParsing hook modifies the stream
-    routes:   ['/api/v1/payments/webhook'],  // whitelist: ONLY the webhook needs rawBody
+    routes: ['/api/v1/payments/webhook'],  // whitelist: ONLY the webhook needs rawBody
   });
 
   // Multipart handling for Fastify (replaces Multer)
   await app.register(require('@fastify/multipart'), {
     limits: {
       fieldNameSize: 100,       // Max field name size in bytes
-      fieldSize:     1_000_000, // Max field value size (1 MB)
-      fields:        10,        // Max non-file fields
-      fileSize:      10_485_760,// Max file size (10 MB)
-      files:         1,         // Max file fields per request
+      fieldSize: 1_000_000, // Max field value size (1 MB)
+      fields: 10,        // Max non-file fields
+      fileSize: 10_485_760,// Max file size (10 MB)
+      files: 1,         // Max file fields per request
     },
   });
 

@@ -10,82 +10,73 @@ import { map } from 'rxjs/operators';
 import { CryptoUtil } from '../utils/crypto.util';
 
 export interface StandardResponse<T> {
-  success: boolean;
+  success:    boolean;
   statusCode: number;
-  message: string;
-  data: T | string;
-  path: string;
-  timestamp: string;
-  encrypted: boolean;
-  version: string;
-  error: any;
+  message:    string;
+  data:       T | string;
+  path:       string;
+  timestamp:  string;
+  encrypted:  boolean;
+  version:    string;
+  error:      any;
 }
 
 @Injectable()
-export class ResponseInterceptor<T> implements NestInterceptor<
-  T,
-  StandardResponse<T>
-> {
-  constructor(private configService: ConfigService) { }
+export class ResponseInterceptor<T> implements NestInterceptor<T, StandardResponse<T>> {
+  constructor(private configService: ConfigService) {}
 
-  intercept(
-    context: ExecutionContext,
-    next: CallHandler,
-  ): Observable<StandardResponse<T>> {
-    const httpCtx = context.switchToHttp();
-    const request = httpCtx.getRequest<any>();
+  intercept(context: ExecutionContext, next: CallHandler): Observable<StandardResponse<T>> {
+    const httpCtx  = context.switchToHttp();
+    const request  = httpCtx.getRequest<any>();
     const response = httpCtx.getResponse<any>();
 
-    // Skip wrapping for SSE (Server-Sent Events)
-    // SSE requires a raw stream of data: lines, which our interceptor would break
-    const isStream =
-      response.getHeader('Content-Type') === 'text/event-stream' ||
-      request.url.includes('/notifications/stream') ||
-      request.headers['accept'] === 'text/event-stream';
-
-    if (isStream) {
-      if (!response.getHeader('Content-Type')) {
-        response.setHeader('Content-Type', 'text/event-stream');
-      }
+    // Skip SSE streams
+    if (
+      response.getHeader?.('Content-Type') === 'text/event-stream' ||
+      request.url?.includes('/notifications/stream') ||
+      request.headers?.['accept'] === 'text/event-stream'
+    ) {
       return next.handle();
     }
 
-    const isEncryptionEnabled =
-      this.configService.get('ENCRYPTION_ENABLED') === 'true';
-
-    // 🚀 CRITICAL: Skip standard response wrapping and encryption for SSE streams
-    // SSE requires raw text/event-stream format, and standard wrapping breaks it.
-    if (request.headers['accept'] === 'text/event-stream' || request.url.includes('/stream')) {
-      return next.handle();
-    }
+    const isEncryptionEnabled = this.configService.get('ENCRYPTION_ENABLED') === 'true';
 
     return next.handle().pipe(
       map((data) => {
-        const message = 'Request successful';
         let responseData = data;
-        let encrypted = false;
+        let encrypted    = false;
 
-        // Encrypt if enabled and data exists
         if (isEncryptionEnabled && data !== null && data !== undefined) {
           try {
-            // Use AES encryption (Shared Secret handled internally)
-            responseData = CryptoUtil.encryptPayload(data);
+            const aesKey = request.aesKey as Buffer | undefined;
+
+            if (aesKey) {
+              if (process.env.NODE_ENV !== 'production') {
+                console.log(`[DEV] 🔐 Encrypting RSA+AES response [${request.url}]:`, JSON.stringify(data).substring(0, 300));
+              }
+              responseData = CryptoUtil.encryptWithAesKey(data, aesKey);
+            } else {
+              if (process.env.NODE_ENV !== 'production') {
+                console.log(`[DEV] 🔐 Encrypting AES response [${request.url}]:`, JSON.stringify(data).substring(0, 300));
+              }
+              responseData = CryptoUtil.encryptPayload(data);
+            }
             encrypted = true;
-          } catch (e) {
-            console.error('Response encryption failed:', e);
+          } catch {
+            // Encryption failure → send plaintext
           }
         }
 
         return {
-          success: true,
-          statusCode: response.statusCode || response.code, // Support both Fastify and Express status access
-          message: message,
-          data: responseData ?? {},
-          path: request.url,
-          timestamp: new Date().toISOString(),
+          success:    true,
+          statusCode: response.statusCode || response.code || 200,
+          message:    'Request successful',
+          data:       responseData ?? {},
+          path:       request.url,
+          timestamp:  new Date().toISOString(),
           encrypted,
-          version: '1.0',
-          error: null,
+          version:    '1.0',
+          error:      null,
         };
       }),
     );

@@ -132,12 +132,38 @@ export class SecurityGuard implements CanActivate {
     }
 
     private decryptBody(req: any) {
-        const isEncrypted = req.headers['x-encrypted'] === 'true';
-        if (isEncrypted && req.body && req.body.payload) {
+        const isEncrypted    = req.headers['x-encrypted'] === 'true';
+        const encryptionType = (req.headers['x-encryption-type'] as string) || 'aes';
+
+        if (!isEncrypted || !req.body) return;
+
+        if (encryptionType === 'rsa-aes' && req.body.encryptedKey) {
+            // ── RSA-4096 + AES-256-GCM hybrid ─────────────────────────────────
+            try {
+                const { data, aesKey } = CryptoUtil.decryptHybridPayload(req.body);
+                req.body   = data;
+                req.aesKey = aesKey; // stored for ResponseInterceptor to encrypt the response
+                if (process.env.NODE_ENV !== 'production') {
+                    this.logger.debug(`[DEV] 🔓 Decrypted RSA+AES [${req.method} ${req.url}]: ${JSON.stringify(data).substring(0, 200)}`);
+                }
+            } catch (error: any) {
+                // Log every detail so the developer can see the root cause
+                this.logger.error(`RSA+AES decryption failed: ${error?.message ?? error}`);
+                this.logger.error(`RSA_PRIVATE_KEY set: ${!!process.env.RSA_PRIVATE_KEY}`);
+                this.logger.error(`encryptedKey length: ${req.body?.encryptedKey?.length ?? 'N/A'}`);
+                this.logger.error(`iv: ${req.body?.iv ?? 'N/A'}`);
+                this.logger.error(`authTag: ${req.body?.authTag ?? 'N/A'}`);
+                throw new BadRequestException(`Failed to decrypt request body: ${error?.message ?? 'unknown'}`);
+            }
+        } else if (req.body.payload && typeof req.body.payload === 'string') {
+            // ── Legacy shared-secret AES ───────────────────────────────────────
             try {
                 req.body = CryptoUtil.decryptPayload(req.body.payload);
+                if (process.env.NODE_ENV !== 'production') {
+                    this.logger.debug(`[DEV] 🔓 Decrypted AES [${req.method} ${req.url}]: ${JSON.stringify(req.body).substring(0, 200)}`);
+                }
             } catch (error) {
-                this.logger.error('Decryption failed', error);
+                this.logger.error('AES decryption failed', error);
                 throw new BadRequestException('Failed to decrypt request body');
             }
         }
