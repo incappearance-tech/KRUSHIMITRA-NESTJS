@@ -36,6 +36,7 @@ import { ReportWorkerModule } from './workers/report/report.worker.module';
 import { EventsModule } from './events/events.module';
 import { SecurityGuard } from './common/guards/security.guard';
 import { AppLoggerModule } from './common/logger/logger.module';
+import { MaterialsModule } from './modules/materials/materials.module';
 
 @Module({
   imports: [
@@ -146,6 +147,7 @@ import { AppLoggerModule } from './common/logger/logger.module';
     ReportWorkerModule,
     EventsModule,
     AppLoggerModule,
+    MaterialsModule,
   ],
   controllers: [AppController],
   providers: [

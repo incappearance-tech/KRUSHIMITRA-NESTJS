@@ -155,10 +155,12 @@ export class MachinesService {
     }
 
     if (search) {
+      // Match brand, model, category, OR the combined "brand model" display name
       conditions.push(`(
-        m.brand ILIKE $${paramIndex} OR 
-        m.model ILIKE $${paramIndex} OR 
-        m.category ILIKE $${paramIndex}
+        m.brand    ILIKE $${paramIndex} OR
+        m.model    ILIKE $${paramIndex} OR
+        m.category ILIKE $${paramIndex} OR
+        CONCAT(m.brand, ' ', m.model) ILIKE $${paramIndex}
       )`);
       params.push(`%${search}%`);
       paramIndex++;

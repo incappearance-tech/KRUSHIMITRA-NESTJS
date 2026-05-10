@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,6 +6,476 @@ datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                     String              @id @default(uuid())
+  phoneNumber            String              @unique
+  name                   String?
+  role                   UserRole            @default(GUEST)
+  locationLat            Float?
+  locationLng            Float?
+  preferredLanguage      String              @default("en")
+  isVerified             Boolean             @default(false)
+  fcmToken               String?
+  deviceOS               String?
+  privacyConsent         Boolean             @default(false)
+  consentTimestamp       DateTime?
+  deletedAt              DateTime?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  farmerId               String?
+  profileImage           String?
+  auditLogs              AuditLog[]
+  callsOutgoing          CallLog[]           @relation("CallerLogs")
+  callsIncoming          CallLog[]           @relation("ReceiverLogs")
+  farmerMaterials        FarmerMaterial[]    @relation("FarmerMaterials")
+  labourBookings         LabourBooking[]     @relation("FarmerBookings")
+  labourProfile          LabourProfile?
+  listings               Machine[]
+  notifications          Notification[]
+  ordersAsBuyer          Order[]             @relation("BuyerOrders")
+  ordersAsSeller         Order[]             @relation("SellerOrders")
+  payments               Payment[]
+  borrowerRentalRequests RentalRequest[]     @relation("BorrowerRentalRequests")
+  ownerRentalRequests    RentalRequest[]     @relation("OwnerRentalRequests")
+  subscriptions          Subscription[]
+  transportRequests      TransportRequest[]  @relation("FarmerRequests")
+  transportTrips         TransportTrip[]     @relation("FarmerTrips")
+  transporterProfile     TransporterProfile?
+
+  @@index([role])
+  @@index([isVerified])
+  @@index([role, isVerified])
+  @@index([createdAt])
+  @@index([phoneNumber, role])
+}
+
+model LabourProfile {
+  id             String          @id @default(uuid())
+  userId         String          @unique
+  skills         String[]
+  experience     String?
+  pricePerDay    Decimal         @db.Decimal(10, 2)
+  workPreference String          @default("Day")
+  isAvailable    Boolean         @default(true)
+  rating         Float           @default(0)
+  jobsCompleted  Int             @default(0)
+  callsReceived  Int             @default(0)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  lat            Float?
+  lng            Float?
+  bookings       LabourBooking[] @relation("LabourBookings")
+  user           User            @relation(fields: [userId], references: [id])
+
+  @@index([isAvailable])
+  @@index([rating])
+  @@index([isAvailable, rating])
+}
+
+model TransporterProfile {
+  id              String          @id @default(uuid())
+  userId          String          @unique
+  businessName    String?
+  operatingRadius Int             @default(50)
+  experience      String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  lat             Float?
+  lng             Float?
+  trips           TransportTrip[]
+  user            User            @relation(fields: [userId], references: [id])
+  vehicles        Vehicle[]
+
+  @@index([lat, lng])
+}
+
+model TransportTrip {
+  id             String             @id @default(uuid())
+  transporterId  String
+  farmerId       String?
+  farmerName     String
+  farmerPhone    String
+  pickupLocation String
+  dropLocation   String
+  loadType       String?
+  vehicleType    String
+  date           DateTime
+  status         String             @default("pending")
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  weight         String?
+  farmer         User?              @relation("FarmerTrips", fields: [farmerId], references: [id])
+  transporter    TransporterProfile @relation(fields: [transporterId], references: [id])
+
+  @@index([transporterId])
+  @@index([farmerId])
+  @@index([status, createdAt])
+  @@index([date])
+  @@index([transporterId, status, createdAt])
+  @@index([farmerId, status, createdAt])
+}
+
+model Vehicle {
+  id              String                @id @default(uuid())
+  transporterId   String
+  type            String
+  model           String
+  numberPlate     String?
+  capacity        String?
+  ratePerKm       Decimal?              @db.Decimal(10, 2)
+  isAvailable     Boolean               @default(true)
+  images          String[]
+  driverName      String?
+  driverPhone     String?
+  driverLicense   String?
+  plan            String?
+  expiryDate      DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  operatingArea   String?
+  rating          Float                 @default(0)
+  tripCount       Int                   @default(0)
+  locationLat     Float?
+  locationLng     Float?
+  operatingRadius Int?
+  drivers         Driver[]
+  subscriptions   Subscription[]
+  requests        TransportRequest[]
+  transporter     TransporterProfile    @relation(fields: [transporterId], references: [id])
+  availability    VehicleAvailability[]
+
+  @@index([transporterId])
+  @@index([type, isAvailable])
+  @@index([locationLat, locationLng])
+  @@index([expiryDate])
+}
+
+model Driver {
+  id         String   @id @default(uuid())
+  vehicleId  String
+  name       String
+  mobile     String
+  license    String?
+  experience String?
+  photo      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id])
+
+  @@index([vehicleId])
+}
+
+model VehicleAvailability {
+  id        String            @id @default(uuid())
+  vehicleId String
+  date      DateTime
+  state     AvailabilityState @default(AVAILABLE)
+  note      String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  vehicle   Vehicle           @relation(fields: [vehicleId], references: [id])
+
+  @@unique([vehicleId, date])
+  @@index([vehicleId])
+  @@index([date])
+  @@index([vehicleId, date])
+}
+
+model TransportRequest {
+  id                 String                 @id @default(uuid())
+  farmerId           String
+  vehicleId          String
+  transporterId      String
+  pickup             String
+  drop               String
+  crop               String?
+  quantity           String?
+  requiredDate       DateTime
+  status             TransportRequestStatus @default(SENT)
+  rejectedAt         DateTime?
+  suggestedDate      DateTime?
+  cancellationReason String?
+  cancelledById      String?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  farmer             User                   @relation("FarmerRequests", fields: [farmerId], references: [id])
+  vehicle            Vehicle                @relation(fields: [vehicleId], references: [id])
+
+  @@index([farmerId])
+  @@index([vehicleId])
+  @@index([transporterId])
+  @@index([status, createdAt])
+  @@index([farmerId, status, createdAt])
+  @@index([transporterId, status, createdAt])
+  @@index([vehicleId, requiredDate])
+  @@index([farmerId, vehicleId, status])
+  @@index([transporterId, status])
+}
+
+model MachineCategory {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  icon      String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Machine {
+  id             String          @id @default(uuid())
+  ownerId        String
+  category       String
+  brand          String
+  model          String
+  yearOfPurchase Int
+  listingType    ListingType     @default(SELL)
+  price          Decimal         @db.Decimal(10, 2)
+  images         String[]
+  status         ListingStatus   @default(AVAILABLE)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  lat            Float?
+  lng            Float?
+  plan           String?
+  planExpiresAt  DateTime?
+  pricingUnit    String          @default("PER_HOUR")
+  isNegotiable   Boolean         @default(false)
+  busyDates      DateTime[]
+  owner          User            @relation(fields: [ownerId], references: [id])
+  orders         Order[]
+  rentalRequests RentalRequest[]
+
+  @@index([status])
+  @@index([listingType])
+  @@index([category])
+  @@index([status, listingType])
+  @@index([category, status])
+  @@index([price])
+  @@index([createdAt])
+  @@index([ownerId])
+}
+
+model RentalRequest {
+  id           String              @id @default(uuid())
+  machineId    String
+  borrowerId   String
+  ownerId      String
+  startDate    DateTime
+  numberOfDays Int
+  pricePerDay  Decimal             @db.Decimal(10, 2)
+  totalPrice   Decimal             @db.Decimal(10, 2)
+  status       RentalRequestStatus @default(PENDING)
+  note         String?
+  rejectReason String?
+  respondedAt  DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  borrower     User                @relation("BorrowerRentalRequests", fields: [borrowerId], references: [id])
+  machine      Machine             @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  owner        User                @relation("OwnerRentalRequests", fields: [ownerId], references: [id])
+
+  @@index([machineId, status])
+  @@index([borrowerId, status])
+  @@index([ownerId, status])
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
+model Order {
+  id                   String   @id @default(uuid())
+  buyerId              String
+  sellerId             String
+  machineId            String?
+  amount               Decimal  @db.Decimal(10, 2)
+  paymentStatus        String   @default("PENDING")
+  gatewayTransactionId String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  buyer                User     @relation("BuyerOrders", fields: [buyerId], references: [id])
+  machine              Machine? @relation(fields: [machineId], references: [id])
+  seller               User     @relation("SellerOrders", fields: [sellerId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  resource  String
+  details   Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+}
+
+model LabourBooking {
+  id           String        @id @default(uuid())
+  farmerId     String
+  labourId     String
+  taskType     String
+  date         DateTime
+  numberOfDays Int           @default(1)
+  location     String
+  workers      Int           @default(1)
+  description  String?
+  status       String        @default("pending")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  farmer       User          @relation("FarmerBookings", fields: [farmerId], references: [id])
+  labour       LabourProfile @relation("LabourBookings", fields: [labourId], references: [id])
+
+  @@index([farmerId])
+  @@index([labourId])
+  @@index([status])
+  @@index([labourId, status])
+  @@index([farmerId, status])
+  @@index([labourId, status, createdAt])
+}
+
+model Payment {
+  id                String        @id @default(uuid())
+  userId            String
+  type              String
+  amount            Decimal       @db.Decimal(10, 2)
+  razorpayOrderId   String?       @unique
+  razorpayPaymentId String?
+  status            String        @default("PENDING")
+  entityId          String?
+  createdAt         DateTime      @default(now())
+  description       String?
+  metadata          Json?
+  updatedAt         DateTime      @default(now()) @updatedAt
+  upiMethod         String?
+  upiTxnRef         String?
+  entityType        String?       @default("MACHINE")
+  paymentMethod     String?       @default("UPI")
+  refundAmount      Decimal?      @db.Decimal(10, 2)
+  refundReason      String?
+  refundedAt        DateTime?
+  role              String        @default("FARMER")
+  feature           String?
+  planTier          String?
+  user              User          @relation(fields: [userId], references: [id])
+  subscription      Subscription?
+
+  @@index([userId])
+  @@index([userId, role])
+  @@index([userId, type])
+  @@index([status])
+  @@index([type])
+  @@index([role])
+  @@index([entityId, entityType])
+  @@index([createdAt])
+  @@index([razorpayOrderId])
+  @@index([userId, status])
+  @@index([type, status])
+  @@index([status, createdAt])
+}
+
+model Subscription {
+  id               String   @id @default(uuid())
+  vehicleId        String?
+  paymentId        String   @unique
+  plan             String
+  startDate        DateTime
+  endDate          DateTime
+  renewalCount     Int      @default(0)
+  expiryNotified   Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  autoRenew        Boolean  @default(false)
+  entityId         String
+  entityType       String   @default("VEHICLE")
+  subscriptionType String   @default("VEHICLE_PLAN")
+  userId           String
+  payment          Payment  @relation(fields: [paymentId], references: [id])
+  user             User     @relation(fields: [userId], references: [id])
+  vehicle          Vehicle? @relation(fields: [vehicleId], references: [id])
+
+  @@index([userId])
+  @@index([entityId, entityType])
+  @@index([endDate])
+  @@index([subscriptionType])
+  @@index([expiryNotified, endDate])
+  @@index([userId, subscriptionType])
+  @@index([vehicleId])
+}
+
+model WebhookLog {
+  id        String   @id @default(uuid())
+  event     String
+  orderId   String?
+  paymentId String?
+  payload   Json
+  processed Boolean  @default(false)
+  errorMsg  String?
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+  @@index([event])
+  @@index([processed])
+  @@index([createdAt])
+}
+
+model CallLog {
+  id              String   @id @default(uuid())
+  callerId        String
+  receiverId      String
+  bookingId       String?
+  bookingType     String?
+  exotelCallId    String?
+  durationSeconds Int      @default(0)
+  status          String   @default("initiated")
+  createdAt       DateTime @default(now())
+  caller          User     @relation("CallerLogs", fields: [callerId], references: [id])
+  receiver        User     @relation("ReceiverLogs", fields: [receiverId], references: [id])
+
+  @@index([callerId])
+  @@index([receiverId])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType @default(INFO)
+  isRead    Boolean          @default(false)
+  link      String?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  user      User             @relation(fields: [userId], references: [id])
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
+
+model FeeConfig {
+  id          String   @id @default(uuid())
+  feature     String   @unique
+  amountPaise Int
+  isActive    Boolean  @default(true)
+  label       String?
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+}
+
+model FarmerMaterial {
+  id           String   @id @default(uuid())
+  farmerId     String
+  materialName String
+  photoUrl     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  expiresAt    DateTime @default(now())
+  farmer       User     @relation("FarmerMaterials", fields: [farmerId], references: [id])
+
+  @@index([farmerId])
+  @@index([createdAt])
+  @@index([expiresAt])
 }
 
 enum UserRole {
@@ -55,22 +522,6 @@ enum PaymentStatus {
   REFUNDED
 }
 
-// ── Payment type catalogue — add new types here as features grow ─────────────
-// Values stored as String in DB for safe migration; validated at service layer.
-// FARMER pays:      MACHINE_LISTING_FREE | MACHINE_LISTING_BASIC | MACHINE_LISTING_PRO | CONTACT_UNLOCK
-// TRANSPORTER pays: VEHICLE_SUBSCRIPTION
-// Future:           PREMIUM_PROFILE | TRANSPORT_BOOKING | CROP_INSURANCE
-//
-// Legacy aliases kept so old records still decode:
-//   LISTING_FEE   → MACHINE_LISTING_FREE
-//   CALL_FEE      → CONTACT_UNLOCK
-//   SUBSCRIPTION  → VEHICLE_SUBSCRIPTION
-//
-// DO NOT remove legacy values — they may exist in old Payment rows.
-//
-// Payment method values: UPI | CARD | NETBANKING | FREE
-// Entity type values:    MACHINE | VEHICLE | CONTACT | PROFILE
-
 enum ListingStatus {
   AVAILABLE
   SOLD
@@ -84,538 +535,4 @@ enum RentalRequestStatus {
   REJECTED
   COMPLETED
   CANCELLED
-}
-
-model User {
-  id                String   @id @default(uuid())
-  phoneNumber       String   @unique
-  name              String?
-  farmerId          String? // Custom ID enterable by user
-  profileImage      String? // Avatar URL for all roles
-  role              UserRole @default(GUEST)
-  locationLat       Float?
-  locationLng       Float?
-  preferredLanguage String   @default("en")
-  isVerified        Boolean  @default(false)
-  fcmToken          String? // For mobile push notifications
-  deviceOS          String? // 'android' or 'ios'
-
-  // DPDP Act Compliance Fields
-  privacyConsent   Boolean   @default(false)
-  consentTimestamp DateTime?
-  deletedAt        DateTime? // For "Right to Erasure" (Soft Delete)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  listings          Machine[]
-  ordersAsBuyer     Order[]            @relation("BuyerOrders")
-  transportRequests TransportRequest[] @relation("FarmerRequests")
-  ordersAsSeller    Order[]            @relation("SellerOrders")
-  auditLogs         AuditLog[]
-  payments          Payment[]
-  callsOutgoing     CallLog[]          @relation("CallerLogs")
-  callsIncoming     CallLog[]          @relation("ReceiverLogs")
-  notifications     Notification[]
-
-  // Rental request relations
-  borrowerRentalRequests RentalRequest[] @relation("BorrowerRentalRequests")
-  ownerRentalRequests    RentalRequest[] @relation("OwnerRentalRequests")
-  subscriptions          Subscription[]
-
-  // Profile Relations
-  labourProfile      LabourProfile?
-  transporterProfile TransporterProfile?
-  transportTrips     TransportTrip[]     @relation("FarmerTrips")
-  labourBookings     LabourBooking[]     @relation("FarmerBookings")
-
-  // Performance Indexes (10x faster queries)
-  @@index([role]) // Fast role filtering
-  @@index([isVerified]) // Fast verification checks
-  @@index([role, isVerified]) // Composite for role + verified queries
-  @@index([createdAt]) // Fast sorting by creation date
-  @@index([phoneNumber, role]) // Fast auth queries
-}
-
-model LabourProfile {
-  id             String   @id @default(uuid())
-  user           User     @relation(fields: [userId], references: [id])
-  userId         String   @unique
-  skills         String[] // e.g., ["Harvesting", "Ploughing"]
-  experience     String?
-  pricePerDay    Decimal  @db.Decimal(10, 2)
-  workPreference String   @default("Day") // Day, Night, Both
-  isAvailable    Boolean  @default(true)
-  rating         Float    @default(0)
-  jobsCompleted  Int      @default(0)
-  callsReceived  Int      @default(0)
-  lat            Float? // GPS latitude for proximity search
-  lng            Float? // GPS longitude for proximity search
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  bookings LabourBooking[] @relation("LabourBookings")
-
-  // Performance Indexes
-  @@index([isAvailable]) // Fast availability filtering
-  @@index([rating]) // Fast sorting by rating
-  @@index([isAvailable, rating]) // Composite for available + top rated
-}
-
-model TransporterProfile {
-  id              String          @id @default(uuid())
-  user            User            @relation(fields: [userId], references: [id])
-  userId          String          @unique
-  businessName    String?
-  operatingRadius Int             @default(50) // in km
-  experience      String?
-  lat             Float? // GPS latitude for proximity search
-  lng             Float? // GPS longitude for proximity search
-  vehicles        Vehicle[]
-  trips           TransportTrip[]
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-
-  // Performance Indexes for geospatial proximity
-  @@index([lat, lng])
-}
-
-model TransportTrip {
-  id             String             @id @default(uuid())
-  transporter    TransporterProfile @relation(fields: [transporterId], references: [id])
-  transporterId  String
-  farmer         User?              @relation("FarmerTrips", fields: [farmerId], references: [id])
-  farmerId       String?
-  farmerName     String
-  farmerPhone    String
-  pickupLocation String
-  dropLocation   String
-  loadType       String?
-  vehicleType    String
-  weight         String? // e.g., "2 Tons"
-  date           DateTime
-  status         String             @default("pending") // pending, accepted, rejected, completed
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
-
-  // Performance Indexes
-  @@index([transporterId]) // Fast transporter lookup
-  @@index([farmerId]) // Fast farmer lookup
-  @@index([status, createdAt]) // Keyset pagination for fast scrolling
-  @@index([date]) // Fast date sorting
-  @@index([transporterId, status, createdAt]) // Transporter's active trips pagination
-  @@index([farmerId, status, createdAt]) // Farmer's active trips pagination
-}
-
-model Vehicle {
-  id              String             @id @default(uuid())
-  transporter     TransporterProfile @relation(fields: [transporterId], references: [id])
-  transporterId   String
-  type            String // e.g., "Tractor", "Truck"
-  model           String
-  numberPlate     String?
-  capacity        String? // e.g., "5 Tons"
-  ratePerKm       Decimal?           @db.Decimal(10, 2)
-  isAvailable     Boolean            @default(true)
-  images          String[]
-  operatingArea   String? // Human-readable area label e.g. "Nagpur (50km radius)"
-  operatingRadius Int? // km radius from vehicle GPS location
-  locationLat     Float? // Vehicle GPS latitude for proximity search
-  locationLng     Float? // Vehicle GPS longitude for proximity search
-  rating          Float              @default(0)
-  tripCount       Int                @default(0)
-
-  // Driver Info (embedded, kept for backward compat)
-  driverName    String?
-  driverPhone   String?
-  driverLicense String?
-
-  // Subscription Plan
-  plan       String? // monthly, quarterly, yearly
-  expiryDate DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  drivers       Driver[]
-  availability  VehicleAvailability[]
-  requests      TransportRequest[]
-  subscriptions Subscription[] // full renewal history
-
-  @@index([transporterId])
-  @@index([type, isAvailable]) // Fast filtering for active vehicles
-  @@index([locationLat, locationLng]) // Geospatial proximity search
-  @@index([expiryDate]) // Subscription expiry cron queries
-}
-
-model Driver {
-  id         String   @id @default(uuid())
-  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id])
-  vehicleId  String
-  name       String
-  mobile     String
-  license    String?
-  experience String?
-  photo      String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  @@index([vehicleId])
-}
-
-model VehicleAvailability {
-  id        String            @id @default(uuid())
-  vehicle   Vehicle           @relation(fields: [vehicleId], references: [id])
-  vehicleId String
-  date      DateTime // The calendar date (time part ignored)
-  state     AvailabilityState @default(AVAILABLE)
-  note      String? // Optional reason (e.g., "Maintenance", "Holiday")
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-
-  @@unique([vehicleId, date]) // One state per vehicle per day
-  @@index([vehicleId])
-  @@index([date])
-  @@index([vehicleId, date])
-}
-
-model TransportRequest {
-  id                 String                 @id @default(uuid())
-  farmer             User                   @relation("FarmerRequests", fields: [farmerId], references: [id])
-  farmerId           String
-  vehicle            Vehicle                @relation(fields: [vehicleId], references: [id])
-  vehicleId          String
-  transporterId      String // Denormalized for fast queries
-  pickup             String
-  drop               String
-  crop               String?
-  quantity           String? // e.g., "2 Tons"
-  requiredDate       DateTime
-  status             TransportRequestStatus @default(SENT)
-  rejectedAt         DateTime? // For 24h cooldown
-  suggestedDate      DateTime? // Transporter suggests alternate date
-  cancellationReason String? // Why it was cancelled
-  cancelledById      String? // Who cancelled it
-  createdAt          DateTime               @default(now())
-  updatedAt          DateTime               @updatedAt
-
-  @@index([farmerId])
-  @@index([vehicleId])
-  @@index([transporterId])
-  @@index([status, createdAt]) // Keyset pagination
-  @@index([farmerId, status, createdAt]) // Farmer's trip list
-  @@index([transporterId, status, createdAt]) // Transporter's trip list
-  @@index([vehicleId, requiredDate]) // Calendar availability checks (getVehicleAvailability)
-  @@index([farmerId, vehicleId, status]) // Duplicate booking guard (createTransportRequest)
-  @@index([transporterId, status]) // Transporter dashboard counts
-}
-
-model MachineCategory {
-  id        String   @id @default(uuid())
-  name      String   @unique
-  icon      String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model Machine {
-  id             String          @id @default(uuid())
-  owner          User            @relation(fields: [ownerId], references: [id])
-  ownerId        String
-  category       String
-  brand          String
-  model          String
-  yearOfPurchase Int
-  listingType    ListingType     @default(SELL)
-  price          Decimal         @db.Decimal(10, 2)
-  pricingUnit    String          @default("PER_HOUR") // PER_HOUR, PER_DAY, PER_ACRE
-  images         String[]
-  status         ListingStatus   @default(AVAILABLE)
-  isNegotiable   Boolean         @default(false)
-  plan           String? // free, basic, pro
-  planExpiresAt  DateTime?
-  lat            Float? // GPS latitude for proximity search
-  lng            Float? // GPS longitude for proximity search
-  busyDates      DateTime[] // Manual dates when machine is busy/unavailable
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  orders         Order[]
-  rentalRequests RentalRequest[]
-
-  // Performance Indexes
-  @@index([status]) // Fast status filtering
-  @@index([listingType]) // Fast type filtering (SELL/RENT)
-  @@index([category]) // Fast category filtering
-  @@index([status, listingType]) // Composite for available listings
-  @@index([category, status]) // Category + status queries
-  @@index([price]) // Fast price sorting
-  @@index([createdAt]) // Latest listings
-  @@index([ownerId]) // Fast owner lookup
-}
-
-// Tracks every rental booking request from a borrower to a machine owner
-model RentalRequest {
-  id           String              @id @default(uuid())
-  machine      Machine             @relation(fields: [machineId], references: [id], onDelete: Cascade)
-  machineId    String
-  borrower     User                @relation("BorrowerRentalRequests", fields: [borrowerId], references: [id])
-  borrowerId   String
-  owner        User                @relation("OwnerRentalRequests", fields: [ownerId], references: [id])
-  ownerId      String
-  startDate    DateTime
-  numberOfDays Int
-  pricePerDay  Decimal             @db.Decimal(10, 2)
-  totalPrice   Decimal             @db.Decimal(10, 2)
-  status       RentalRequestStatus @default(PENDING)
-  note         String? // Optional message from borrower
-  rejectReason String? // Reason if owner rejected
-  respondedAt  DateTime? // When owner accepted/rejected
-  completedAt  DateTime? // When rental was marked complete
-  createdAt    DateTime            @default(now())
-  updatedAt    DateTime            @updatedAt
-
-  @@index([machineId, status])
-  @@index([borrowerId, status])
-  @@index([ownerId, status])
-  @@index([status, createdAt])
-  @@index([createdAt])
-}
-
-model Order {
-  id                   String   @id @default(uuid())
-  buyer                User     @relation("BuyerOrders", fields: [buyerId], references: [id])
-  buyerId              String
-  seller               User     @relation("SellerOrders", fields: [sellerId], references: [id])
-  sellerId             String
-  machine              Machine? @relation(fields: [machineId], references: [id])
-  machineId            String?
-  amount               Decimal  @db.Decimal(10, 2)
-  paymentStatus        String   @default("PENDING") // PENDING, PAID, FAILED
-  gatewayTransactionId String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-}
-
-model AuditLog {
-  id        String   @id @default(uuid())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id])
-  action    String // e.g., "VIEW_PII", "UPDATE_PROFILE", "DELETE_ACCOUNT"
-  resource  String // e.g., "User", "Order"
-  details   Json? // Stores what was changed or accessed
-  ipAddress String?
-  userAgent String?
-  createdAt DateTime @default(now())
-}
-
-model LabourBooking {
-  id           String        @id @default(uuid())
-  farmer       User          @relation("FarmerBookings", fields: [farmerId], references: [id])
-  farmerId     String
-  labour       LabourProfile @relation("LabourBookings", fields: [labourId], references: [id])
-  labourId     String
-  taskType     String // e.g., "Harvesting"
-  date         DateTime
-  numberOfDays Int           @default(1)
-  location     String
-  workers      Int           @default(1)
-  description  String? // Additional notes or shift info
-  status       String        @default("pending") // pending, accepted, rejected, completed
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-
-  @@index([farmerId])
-  @@index([labourId])
-  @@index([status])
-  @@index([labourId, status]) // Labour incoming jobs — pending filter
-  @@index([farmerId, status]) // Farmer's active labour requests
-  @@index([labourId, status, createdAt]) // Labour history pagination
-}
-
-model Payment {
-  id     String @id @default(uuid())
-  user   User   @relation(fields: [userId], references: [id])
-  userId String
-
-  // WHO is paying — mirrors UserRole enum values (FARMER | TRANSPORTER | LABOUR)
-  // Default FARMER for backward compat with existing rows
-  role String @default("FARMER")
-
-  // WHAT are they paying for — see comment block above for valid values
-  // NOTE: type is being deprecated in favor of feature
-  type     String
-  feature  String?
-  planTier String?
-
-  // HOW MUCH — always in rupees (paise /100 before storing)
-  amount Decimal @db.Decimal(10, 2)
-
-  // Razorpay gateway identifiers
-  razorpayOrderId   String? @unique
-  razorpayPaymentId String?
-
-  // Payment state: PENDING | PAID | FAILED | REFUNDED
-  status String @default("PENDING")
-
-  // WHICH entity this payment activates
-  // entityId: machineId | vehicleId | labourProfileId | contactUserId
-  // entityType: MACHINE | VEHICLE | CONTACT | PROFILE
-  entityId   String?
-  entityType String? @default("MACHINE")
-
-  // HOW they paid — UPI | CARD | NETBANKING | FREE
-  paymentMethod String? @default("UPI")
-  upiMethod     String? // "Google Pay" | "PhonePe" | "Paytm" | "BHIM" | "Manual UPI"
-  upiTxnRef     String? // UPI transaction reference number
-
-  // Human-readable context
-  description String?
-  metadata    Json? // Raw gateway response snapshot
-
-  // Refund tracking
-  refundedAt   DateTime?
-  refundAmount Decimal?  @db.Decimal(10, 2)
-  refundReason String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
-
-  // Relations
-  subscription Subscription?
-
-  @@index([userId])
-  @@index([userId, role])
-  @@index([userId, type])
-  @@index([status])
-  @@index([type])
-  @@index([role])
-  @@index([entityId, entityType])
-  @@index([createdAt])
-  @@index([razorpayOrderId])
-  @@index([userId, status])
-  @@index([type, status])
-  @@index([status, createdAt])
-}
-
-// Tracks one active subscription period per vehicle.
-// A new Subscription row is created on each payment/renewal.
-// Full renewal history = multiple rows with same vehicleId.
-// Subscription — tracks an active entitlement unlocked by a Payment.
-//
-// subscriptionType values:
-//   VEHICLE_PLAN    → Transporter paid for vehicle subscription
-//   MACHINE_LISTING → Farmer paid for machine listing plan (basic/pro)
-//   PREMIUM_PROFILE → future: premium visibility for labour/transporter
-//
-// entityType values:
-//   VEHICLE | MACHINE | PROFILE
-//
-// Design: one Subscription row per payment.
-// Renewal history = multiple rows with the same entityId.
-model Subscription {
-  id String @id @default(uuid())
-
-  // Who owns this subscription
-  user   User   @relation(fields: [userId], references: [id])
-  userId String
-
-  // Which payment created it
-  payment   Payment @relation(fields: [paymentId], references: [id])
-  paymentId String  @unique
-
-  // What type of subscription — VEHICLE_PLAN | MACHINE_LISTING | PREMIUM_PROFILE
-  subscriptionType String @default("VEHICLE_PLAN")
-
-  // Which entity this subscription covers (vehicleId or machineId or profileId)
-  entityId   String
-  entityType String @default("VEHICLE") // VEHICLE | MACHINE | PROFILE
-
-  // Legacy: direct FK to Vehicle for backward compat + cascade delete
-  vehicleId String?
-  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
-
-  // Plan tier & validity
-  plan      String // monthly | quarterly | yearly | free | basic | pro
-  startDate DateTime
-  endDate   DateTime
-
-  // Operational flags
-  renewalCount   Int     @default(0)
-  expiryNotified Boolean @default(false)
-  autoRenew      Boolean @default(false)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([userId])
-  @@index([entityId, entityType])
-  @@index([endDate])
-  @@index([subscriptionType])
-  @@index([expiryNotified, endDate])
-  @@index([userId, subscriptionType])
-  @@index([vehicleId])
-}
-
-// Immutable audit log of every Razorpay webhook event received.
-// Enables replays, dispute resolution, and duplicate detection.
-model WebhookLog {
-  id        String   @id @default(uuid())
-  event     String // "payment.captured", "payment.failed", etc.
-  orderId   String? // razorpay order_id extracted from payload
-  paymentId String? // razorpay payment_id extracted from payload
-  payload   Json // full raw webhook body
-  processed Boolean  @default(false)
-  errorMsg  String? // set if processing threw
-  createdAt DateTime @default(now())
-
-  @@index([orderId])
-  @@index([event])
-  @@index([processed])
-  @@index([createdAt])
-}
-
-model CallLog {
-  id              String   @id @default(uuid())
-  caller          User     @relation("CallerLogs", fields: [callerId], references: [id])
-  callerId        String
-  receiver        User     @relation("ReceiverLogs", fields: [receiverId], references: [id])
-  receiverId      String
-  bookingId       String?
-  bookingType     String? // LABOUR, TRANSPORT, MACHINE
-  exotelCallId    String?
-  durationSeconds Int      @default(0)
-  status          String   @default("initiated") // initiated, completed, failed
-  createdAt       DateTime @default(now())
-
-  @@index([callerId])
-  @@index([receiverId])
-}
-
-model Notification {
-  id        String           @id @default(uuid())
-  user      User             @relation(fields: [userId], references: [id])
-  userId    String
-  title     String
-  message   String
-  type      NotificationType @default(INFO)
-  isRead    Boolean          @default(false)
-  link      String? // Optional deep link or route path
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
-
-  @@index([userId, isRead])
-  @@index([createdAt])
-}
-
-model FeeConfig {
-  id          String   @id @default(uuid())
-  feature     String   @unique // MACHINE_LISTING_BASIC, VEHICLE_MONTHLY, etc.
-  amountPaise Int // 0 = free
-  isActive    Boolean  @default(true)
-  label       String? // "Basic Machine Listing Plan"
-  updatedAt   DateTime @updatedAt
-  updatedBy   String? // admin userId for audit
 }
