@@ -14,6 +14,8 @@ export enum UserRole {
   FARMER = 'FARMER',
   LABOUR = 'LABOUR',
   TRANSPORTER = 'TRANSPORTER',
+  NURSERY = 'NURSERY',
+  GUEST = 'GUEST',
 }
 
 export class RequestOtpDto {
