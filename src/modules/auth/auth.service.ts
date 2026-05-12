@@ -104,6 +104,7 @@ export class AuthService {
             | 'FARMER'
             | 'LABOUR'
             | 'TRANSPORTER'
+            | 'NURSERY'
             | 'GUEST';
 
         if (!user) {
@@ -237,6 +238,23 @@ export class AuthService {
                 const isComplete = !!profile && hasName && hasLocation;
                 this.logger.log(
                     `isProfileComplete [TRANSPORTER]: profile=${!!profile}, name=${hasName}, loc=${hasLocation} => result=${isComplete}`,
+                );
+                return isComplete;
+            }
+
+            if (user.role === 'NURSERY') {
+                const profile = await this.prisma.nurseryProfile.findUnique({
+                    where: { userId: user.id },
+                });
+                if (profile && !hasName && profile.nurseryName) {
+                    hasName = true;
+                    this.logger.log(
+                        `isProfileComplete [NURSERY]: Fallback name to nurseryName "${profile.nurseryName}"`,
+                    );
+                }
+                const isComplete = !!profile && hasLocation;
+                this.logger.log(
+                    `isProfileComplete [NURSERY]: profile=${!!profile}, loc=${hasLocation} => result=${isComplete}`,
                 );
                 return isComplete;
             }
@@ -391,6 +409,9 @@ export class AuthService {
                         transporterProfile: {
                             include: { vehicles: true },
                         },
+                        nurseryProfile: {
+                            include: { products: true },
+                        },
                     },
                 });
 
@@ -441,6 +462,26 @@ export class AuthService {
                         where: { id: user.transporterProfile.id },
                     });
                 }
+
+                // 3a. Cleanup Nursery Data
+                if (user.nurseryProfile) {
+                    this.logger.verbose(
+                        `3a. Cleaning up Nursery Data for ${user.nurseryProfile.id}`,
+                    );
+                    const productIds = user.nurseryProfile.products.map((p) => p.id);
+                    await tx.nurseryEnquiry.deleteMany({
+                        where: { OR: [{ nurseryId: user.nurseryProfile.id }, { productId: { in: productIds } }] },
+                    });
+                    await tx.nurseryProduct.deleteMany({
+                        where: { nurseryId: user.nurseryProfile.id },
+                    });
+                    await tx.nurseryProfile.delete({
+                        where: { id: user.nurseryProfile.id },
+                    });
+                }
+
+                // 3b. Cleanup farmer's own nursery enquiries
+                await tx.nurseryEnquiry.deleteMany({ where: { farmerId: userId } });
 
                 // 3. Cleanup Labour Data
                 if (user.labourProfile) {

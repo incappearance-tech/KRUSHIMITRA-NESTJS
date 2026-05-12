@@ -15,7 +15,26 @@ enum UserRole {
   FARMER
   LABOUR
   TRANSPORTER
+  NURSERY
   GUEST
+}
+
+enum NurseryProductCategory {
+  FRUIT_PLANT
+  VEGETABLE_SEEDLING
+  FLOWER_PLANT
+  ORGANIC_FERTILIZER
+  SEEDS
+  FARMING_TOOLS
+  OTHER
+}
+
+enum ProductUnit {
+  PIECE
+  BAG
+  KG
+  TRAY
+  BUNDLE
 }
 
 enum ListingType {
@@ -89,8 +108,10 @@ model User {
   // Profile Relations
   labourProfile     LabourProfile?
   transporterProfile TransporterProfile?
+  nurseryProfile    NurseryProfile?
   transportTrips    TransportTrip[]    @relation("FarmerTrips")
   labourBookings    LabourBooking[]    @relation("FarmerBookings")
+  nurseryEnquiries  NurseryEnquiry[]   @relation("FarmerEnquiries")
   
   // Performance Indexes (10x faster queries)
   @@index([role])                    // Fast role filtering
@@ -395,3 +416,82 @@ model Notification {
   @@index([createdAt])
 }
 
+
+model NurseryProfile {
+  id                String                   @id @default(uuid())
+  user              User                     @relation(fields: [userId], references: [id])
+  userId            String                   @unique
+  nurseryName       String
+  ownerName         String?
+  description       String?
+  specializations   NurseryProductCategory[]
+  address           String?
+  village           String?
+  taluka            String?
+  district          String?
+  gstNumber         String?
+  businessPhotos    String[]
+  whatsappNumber    String?
+  deliveryAvailable Boolean                  @default(false)
+  isActive          Boolean                  @default(true)
+  rating            Float                    @default(0)
+  totalSales        Int                      @default(0)
+  lat               Float?
+  lng               Float?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  products          NurseryProduct[]
+  enquiries         NurseryEnquiry[]
+
+  @@index([isActive])
+  @@index([rating])
+  @@index([lat, lng])
+  @@index([isActive, rating])
+}
+
+model NurseryProduct {
+  id                String                 @id @default(uuid())
+  nursery           NurseryProfile         @relation(fields: [nurseryId], references: [id])
+  nurseryId         String
+  name              String
+  category          NurseryProductCategory
+  price             Decimal                @db.Decimal(10, 2)
+  quantity          Int                    @default(0)
+  unit              ProductUnit            @default(PIECE)
+  description       String?
+  images            String[]
+  deliveryAvailable Boolean                @default(false)
+  whatsappNumber    String?
+  isAvailable       Boolean                @default(true)
+  season            String?                // Monsoon, Summer, Winter, All Year
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  enquiries         NurseryEnquiry[]
+
+  @@index([nurseryId])
+  @@index([category])
+  @@index([isAvailable])
+  @@index([category, isAvailable])
+  @@index([nurseryId, isAvailable])
+}
+
+model NurseryEnquiry {
+  id        String          @id @default(uuid())
+  farmer    User            @relation("FarmerEnquiries", fields: [farmerId], references: [id])
+  farmerId  String
+  nursery   NurseryProfile  @relation(fields: [nurseryId], references: [id])
+  nurseryId String
+  product   NurseryProduct? @relation(fields: [productId], references: [id])
+  productId String?
+  message   String?
+  quantity  Int?
+  status    String          @default("pending")
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([farmerId])
+  @@index([nurseryId])
+  @@index([status])
+}

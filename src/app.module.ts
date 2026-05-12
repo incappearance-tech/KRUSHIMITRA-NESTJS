@@ -19,6 +19,7 @@ import { CommonModule } from './common/common.module';
 import { MachinesModule } from './modules/machines/machines.module';
 import { LabourModule } from './modules/labour/labour.module';
 import { TransporterModule } from './modules/transporter/transporter.module';
+import { NurseryModule } from './modules/nursery/nursery.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { CallsModule } from './modules/calls/calls.module';
 import { NotificationsModule } from './common/notifications/notifications.module';
@@ -133,6 +134,7 @@ import { AppLoggerModule } from './common/logger/logger.module';
     MachinesModule,
     LabourModule,
     TransporterModule,
+    NurseryModule,
     PaymentsModule,
     CallsModule,
     NotificationsModule,
