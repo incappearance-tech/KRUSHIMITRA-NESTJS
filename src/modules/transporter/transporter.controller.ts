@@ -41,9 +41,12 @@ export class TransporterController {
   // ───── PROFILE ─────────────────────────────────────────────
 
   @Get('profile')
-  @ApiOperation({ summary: 'Get own transporter profile' })
-  async getProfile(@GetUser('id') userId: string) {
-    return this.profileService.getProfile(userId);
+  @ApiOperation({ summary: 'Get own transporter profile. Pass ?today=YYYY-MM-DD to get today\'s calendar availability per vehicle.' })
+  async getProfile(
+    @GetUser('id') userId: string,
+    @Query('today') today?: string,
+  ) {
+    return this.profileService.getProfile(userId, today);
   }
 
   @Post('profile')
@@ -154,7 +157,17 @@ export class TransporterController {
     );
   }
 
-  // ───── FARMER-FACING VEHICLE BROWSE ─────────────────────────
+  // ───── FARMER-FACING VEHICLE BROWSE & DETAIL ────────────────
+
+  /** Get single vehicle's public details — farmer views before booking */
+  @Get('vehicles/:vehicleId/public')
+  @ApiOperation({ summary: 'Get a single vehicle with transporter info (public, no phone). Includes availability dates for the requesting farmer.' })
+  async getVehiclePublicDetails(
+    @Param('vehicleId') vehicleId: string,
+    @GetUser('id') userId: string,
+  ) {
+    return this.vehicleService.getVehiclePublicDetails(vehicleId, userId);
+  }
 
   @Get('vehicles/browse')
   @UseInterceptors(HttpCacheInterceptor)
@@ -207,9 +220,23 @@ export class TransporterController {
   }
 
   @Get('requests/incoming')
-  @ApiOperation({ summary: 'Transporter views incoming requests' })
-  async getIncomingRequests(@GetUser('id') userId: string) {
-    return this.transporterService.getTransporterRequests(userId);
+  @ApiOperation({ summary: 'Transporter views incoming requests (optional ?statuses=SENT,SCHEDULED,COMPLETED filter)' })
+  async getIncomingRequests(
+    @GetUser('id') userId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('statuses') statuses?: string,
+  ) {
+    const pageNumber = page ? parseInt(page, 10) : 1;
+    const limitNumber = limit ? parseInt(limit, 10) : 100;
+    const statusArray = statuses ? statuses.split(',').map((s) => s.trim()) : undefined;
+    
+    return this.transporterService.getTransporterRequests({ 
+      userId, 
+      page: pageNumber, 
+      limit: limitNumber, 
+      statuses: statusArray 
+    });
   }
 
   @Get('requests/mine')
@@ -291,8 +318,8 @@ export class TransporterController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get transporter by profile ID' })
-  async getTransporterById(@Param('id') id: string) {
-    return this.profileService.getTransporterById(id);
+  async getTransporterById(@Param('id') id: string, @GetUser('id') userId: string) {
+    return this.profileService.getTransporterById(id, userId);
   }
 
   @Post('book')

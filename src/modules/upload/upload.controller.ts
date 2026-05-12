@@ -58,9 +58,9 @@ export class UploadController {
         const type = (data.fields.type as any)?.value || (data.fields.folder as any)?.value || 'profile';
         const isPrivate = (data.fields.isPrivate as any)?.value === 'true';
 
-        // Mime-type validation
-        if (!data.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
-            throw new BadRequestException('Only image files are allowed!');
+        // Mime-type validation — includes HEIC/HEIF for iPhone camera photos
+        if (!data.mimetype.match(/\/(jpg|jpeg|png|gif|webp|heic|heif)$/i)) {
+            throw new BadRequestException('Only image files are allowed (JPG, PNG, WebP, HEIC).');
         }
 
         // Convert stream to buffer for the Sharp upload service

@@ -37,16 +37,29 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
 
-  // Preserve raw body for Razorpay webhook verification via Fastify plugin
-  // Multipart handling for Fastify (Replaces Multer)
+  // rawBody is needed ONLY for the Razorpay webhook — HMAC verification requires the
+  // raw unparsed body string. Setting global:false + routes whitelist ensures rawBody
+  // is only collected for that one endpoint.
+  //
+  // ⚠️  Do NOT set global:true — rawBody with runFirst:true consumes the entire body
+  //     stream before @fastify/multipart can parse it, causing req.file() to return
+  //     undefined and the "No file provided" error on /upload routes.
+  await app.register(rawBody as any, {
+    global: false,    // opt-in only — don't consume body on every route
+    encoding: 'utf8',   // webhook payload is UTF-8 JSON string
+    runFirst: true,     // capture before any preParsing hook modifies the stream
+    routes: ['/api/v1/payments/webhook'],  // whitelist: ONLY the webhook needs rawBody
+  });
+
+  // Multipart handling for Fastify (replaces Multer)
   await app.register(require('@fastify/multipart'), {
     limits: {
-      fieldNameSize: 100, // Max field name size in bytes
-      fieldSize: 1000000, // Max field value size in bytes (1MB)
-      fields: 10,         // Max number of non-file fields
-      fileSize: 10485760, // Max file size in bytes (10MB)
-      files: 1,           // Max number of file fields
-    }
+      fieldNameSize: 100,       // Max field name size in bytes
+      fieldSize: 1_000_000, // Max field value size (1 MB)
+      fields: 10,        // Max non-file fields
+      fileSize: 10_485_760,// Max file size (10 MB)
+      files: 1,         // Max file fields per request
+    },
   });
 
   // 1. Global Security Headers (Helmet for Fastify)

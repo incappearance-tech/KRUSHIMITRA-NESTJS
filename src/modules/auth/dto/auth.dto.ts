@@ -128,9 +128,12 @@ export class UpdateProfileDto {
   @IsString()
   deviceOS?: string;
 
-  @ApiPropertyOptional({ description: 'Custom Farmer ID' })
+  @ApiPropertyOptional({ description: 'Government-issued Farmer Registration ID (optional)' })
   @IsOptional()
   @IsString()
+  @Matches(/^[a-zA-Z0-9]{6,20}$/, {
+    message: 'Farmer ID must be 6–20 alphanumeric characters with no spaces',
+  })
   farmerId?: string;
 
   @ApiPropertyOptional({ description: 'GPS latitude', example: 18.5204 })

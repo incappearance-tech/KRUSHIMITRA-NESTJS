@@ -5,6 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreateTransportRequestDto } from './dto/create-transport-request.dto';
 import { RespondRequestDto } from './dto/respond-request.dto';
@@ -12,6 +13,8 @@ import { CancelRequestDto } from './dto/cancel-request.dto';
 import { ConfirmSuggestionDto } from './dto/confirm-suggestion.dto';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { haversineSql } from '../../common/utils/haversine.util';
+import { TransportRequestCreatedEvent } from '../../events/types/system.events';
 
 @Injectable()
 export class TransporterService {
@@ -83,19 +86,62 @@ export class TransporterService {
     const page = filters.page || 1;
     const limit = filters.limit || 15;
     const offset = (page - 1) * limit;
-    const now = new Date();
 
-    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const recentRejections = filters.userId ? await this.prisma.transportRequest.findMany({
-      where: {
-        farmerId: filters.userId,
-        status: 'REJECTED',
-        updatedAt: { gte: oneDayAgo }
-      },
-      select: { transporterId: true }
-    }) : [];
+    // Fetch ALL rejected requests for this farmer so we can return per-vehicle blocked dates
+    // (no longer hiding the vehicle — only block the specific rejected date on the frontend)
+    const rejectedRequests = filters.userId
+      ? await this.prisma.transportRequest.findMany({
+          where: { farmerId: filters.userId, status: 'REJECTED' },
+          select: { transporterId: true, requiredDate: true, vehicleId: true },
+        })
+      : [];
 
-    const rejectedTransporterIds = recentRejections.map(r => r.transporterId);
+    const pendingRequests = filters.userId
+      ? await this.prisma.transportRequest.findMany({
+          where: { farmerId: filters.userId, status: 'SENT' },
+          select: { vehicleId: true, requiredDate: true },
+        })
+      : [];
+
+    const activeRequests = filters.userId
+      ? await this.prisma.transportRequest.findMany({
+          where: { 
+            farmerId: filters.userId, 
+            status: { in: ['ACCEPTED', 'SCHEDULED', 'AWAITING_APPROVAL'] } 
+          },
+          select: { vehicleId: true, requiredDate: true },
+        })
+      : [];
+
+    // Map: vehicleId -> array of YYYY-MM-DD strings that were rejected
+    const rejectedDatesByVehicle = new Map<string, string[]>();
+    for (const r of rejectedRequests) {
+      const dateStr = r.requiredDate.toISOString().split('T')[0];
+      if (!rejectedDatesByVehicle.has(r.vehicleId)) {
+        rejectedDatesByVehicle.set(r.vehicleId, []);
+      }
+      rejectedDatesByVehicle.get(r.vehicleId)!.push(dateStr);
+    }
+
+    // Map: vehicleId -> array of YYYY-MM-DD strings with a pending (SENT) request
+    const pendingDatesByVehicle = new Map<string, string[]>();
+    for (const r of pendingRequests) {
+      const dateStr = r.requiredDate.toISOString().split('T')[0];
+      if (!pendingDatesByVehicle.has(r.vehicleId)) {
+        pendingDatesByVehicle.set(r.vehicleId, []);
+      }
+      pendingDatesByVehicle.get(r.vehicleId)!.push(dateStr);
+    }
+
+    // Map: vehicleId -> array of YYYY-MM-DD strings with an active request
+    const activeDatesByVehicle = new Map<string, string[]>();
+    for (const r of activeRequests) {
+      const dateStr = r.requiredDate.toISOString().split('T')[0];
+      if (!activeDatesByVehicle.has(r.vehicleId)) {
+        activeDatesByVehicle.set(r.vehicleId, []);
+      }
+      activeDatesByVehicle.get(r.vehicleId)!.push(dateStr);
+    }
 
     let paramIndex = 1;
     const params: any[] = [];
@@ -104,16 +150,14 @@ export class TransporterService {
       'v."expiryDate" > NOW()'
     ];
 
-    if (rejectedTransporterIds.length > 0) {
-      const placeholders = rejectedTransporterIds.map(() => `$${paramIndex++}`).join(', ');
-      conditions.push(`v."transporterId" NOT IN (${placeholders})`);
-      params.push(...rejectedTransporterIds);
-    }
-
     if (filters.vehicleTypes && filters.vehicleTypes.length > 0) {
-      const typePlaceholders = filters.vehicleTypes.map(() => `$${paramIndex++}`).join(', ');
-      conditions.push(`v."type" IN (${typePlaceholders})`);
-      params.push(...filters.vehicleTypes);
+      // Use ILIKE partial match so "Mini Truck" filter finds
+      // "Mini Truck (Tata Ace / Bolero)" or any custom 'Other' type
+      const orClauses = filters.vehicleTypes.map(
+        () => `v."type" ILIKE $${paramIndex++}`
+      ).join(' OR ');
+      conditions.push(`(${orClauses})`);
+      params.push(...filters.vehicleTypes.map(t => `%${t}%`));
     }
 
     if (filters.searchQuery) {
@@ -140,23 +184,16 @@ export class TransporterService {
     let distanceOrder = 'ORDER BY v."createdAt" DESC';
 
     if (filters.lat != null && filters.lng != null) {
-      // Haversine formula — no PostGIS extension required
-      const EARTH_RADIUS_KM = 6371;
-      const distanceCalc = `(
-        ${EARTH_RADIUS_KM} * 2 * asin(sqrt(
-          pow(sin(radians(u."locationLat" - $${paramIndex}) / 2), 2) +
-          cos(radians($${paramIndex})) * cos(radians(u."locationLat")) *
-          pow(sin(radians(u."locationLng" - $${paramIndex + 1}) / 2), 2)
-        ))
-      )`;
+      const distanceCalc = haversineSql(
+        'u."locationLat"', 'u."locationLng"',
+        `$${paramIndex}`, `$${paramIndex + 1}`,
+      );
       params.push(filters.lat, filters.lng);
       paramIndex += 2;
 
       distanceSelect = `${distanceCalc} as "distanceKm"`;
-
       conditions.push(`${distanceCalc} <= $${paramIndex++}`);
-      params.push(filters.radius || 50);
-
+      params.push(filters.radius ?? 50);
       distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 
@@ -198,6 +235,27 @@ export class TransporterService {
     const countResult = await this.prisma.$queryRawUnsafe<any[]>(countSql, ...countParams);
     const total = Number(countResult[0]?.total || 0);
 
+    const vehicleIds = rawVehicles.map((v) => v.id);
+
+    // Fetch upcoming blocked dates (calendar)
+    const nowStart = new Date();
+    nowStart.setHours(0,0,0,0);
+    const blockedEntries = vehicleIds.length > 0
+      ? await this.prisma.vehicleAvailability.findMany({
+          where: { vehicleId: { in: vehicleIds }, date: { gte: nowStart }, state: { not: 'AVAILABLE' } },
+          select: { vehicleId: true, date: true, state: true }
+        })
+      : [];
+      
+    const blockedDatesByVehicle = new Map<string, { date: string, state: string }[]>();
+    for (const b of blockedEntries) {
+      if (!blockedDatesByVehicle.has(b.vehicleId)) blockedDatesByVehicle.set(b.vehicleId, []);
+      blockedDatesByVehicle.get(b.vehicleId)!.push({
+        date: b.date.toISOString().split('T')[0],
+        state: b.state
+      });
+    }
+
     const mapped = rawVehicles.map((v) => ({
       ...v,
       ratePerKm: v.ratePerKm ? Number(v.ratePerKm) : null,
@@ -213,6 +271,14 @@ export class TransporterService {
         }
       },
       distanceKm: v.distanceKm ?? null,
+      // Dates (YYYY-MM-DD) this farmer was previously rejected for on this vehicle
+      rejectedDates: rejectedDatesByVehicle.get(v.id) ?? [],
+      // Dates (YYYY-MM-DD) this farmer already has a pending (SENT) request on this vehicle
+      pendingDates: pendingDatesByVehicle.get(v.id) ?? [],
+      // Dates (YYYY-MM-DD) this farmer already has an active request on this vehicle
+      activeDates: activeDatesByVehicle.get(v.id) ?? [],
+      // Dates the transporter manually marked as busy/maintenance/etc
+      blockedDates: blockedDatesByVehicle.get(v.id) ?? [],
     }));
 
     return {
@@ -230,15 +296,10 @@ export class TransporterService {
     let distanceOrder = 'ORDER BY p."createdAt" DESC';
 
     if (lat != null && lng != null) {
-      // Haversine formula — no PostGIS extension required
-      const EARTH_RADIUS_KM = 6371;
-      const distanceCalc = `(
-        ${EARTH_RADIUS_KM} * 2 * asin(sqrt(
-          pow(sin(radians(u."locationLat" - $${paramIndex}) / 2), 2) +
-          cos(radians($${paramIndex})) * cos(radians(u."locationLat")) *
-          pow(sin(radians(u."locationLng" - $${paramIndex + 1}) / 2), 2)
-        ))
-      )`;
+      const distanceCalc = haversineSql(
+        'u."locationLat"', 'u."locationLng"',
+        `$${paramIndex}`, `$${paramIndex + 1}`,
+      );
       params.push(lat, lng);
       paramIndex += 2;
 
@@ -252,9 +313,11 @@ export class TransporterService {
 
     const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
+    // phoneNumber excluded from browse — DPDP privacy protection
+    // Phone is only revealed after a booking is ACCEPTED/SCHEDULED/COMPLETED
     const sql = `
       SELECT p.*,
-             u.name as "user_name", u."phoneNumber" as "user_phone",
+             u.name as "user_name",
              u."locationLat" as "user_lat", u."locationLng" as "user_lng",
              ${distanceSelect}
       FROM "TransporterProfile" p
@@ -274,7 +337,7 @@ export class TransporterService {
       distanceKm: p.distanceKm ?? null,
       user: {
         name: p.user_name,
-        phoneNumber: p.user_phone,
+        // phoneNumber intentionally omitted from browse — shared after booking
         locationLat: p.user_lat,
         locationLng: p.user_lng,
       },
@@ -295,13 +358,44 @@ export class TransporterService {
     const farmer = await this.prisma.user.findUnique({ where: { id: farmerId } });
     if (!farmer) throw new NotFoundException('Farmer not found');
 
-    const vehicle = await this.prisma.vehicle.findUnique({ where: { id: dto.vehicleId } });
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where: { id: dto.vehicleId },
+      include: { transporter: { select: { userId: true } } },
+    });
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
     const now = new Date();
     if (!vehicle.expiryDate || vehicle.expiryDate <= now) {
       throw new BadRequestException('This vehicle does not have an active subscription');
     }
+
+    // ── Duplicate guard ─────────────────────────────────────────────────────
+    // Normalise the requested date to midnight UTC so we can do a range check
+    const reqDate = new Date(dto.requiredDate);
+    const dayStart = new Date(Date.UTC(reqDate.getUTCFullYear(), reqDate.getUTCMonth(), reqDate.getUTCDate()));
+    const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000); // next midnight
+
+    const existing = await this.prisma.transportRequest.findFirst({
+      where: {
+        farmerId,
+        vehicleId: dto.vehicleId,
+        requiredDate: { gte: dayStart, lt: dayEnd },
+        // Only block on active/pending statuses — allow re-request if previous was
+        // REJECTED or CANCELLED
+        status: { in: ['SENT', 'ACCEPTED', 'SCHEDULED', 'AWAITING_APPROVAL'] },
+      },
+    });
+
+    if (existing) {
+      const dateLabel = dayStart.toLocaleDateString('en-IN', {
+        day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC'
+      });
+      throw new BadRequestException(
+        `You already have a pending request to this vehicle for ${dateLabel}. ` +
+        `Please wait for the transporter's response or choose a different date.`
+      );
+    }
+    // ── End duplicate guard ─────────────────────────────────────────────────
 
     const newReq = await this.prisma.transportRequest.create({
       data: {
@@ -317,24 +411,80 @@ export class TransporterService {
       }
     });
 
-    this.eventEmitter.emit('transport.request.created', { requestId: newReq.id });
+    this.eventEmitter.emit(
+      'transport.request.created',
+      new TransportRequestCreatedEvent(
+        newReq.id,
+        farmerId,
+        dto.vehicleId,
+        vehicle.transporter.userId,
+      ),
+    );
     return newReq;
   }
 
-  async getTransporterRequests(userId: string) {
+  async getTransporterRequests({
+    userId,
+    page = 1,
+    limit = 100,
+    statuses,
+  }: {
+    userId: string;
+    page?: number;
+    limit?: number;
+    statuses?: string[];
+  }) {
+    const skip = (page - 1) * limit;
     const profile = await this.prisma.transporterProfile.findUnique({ where: { userId } });
-    if (!profile) return [];
+    if (!profile) return { data: [], meta: { total: 0, page, limit, hasMore: false } };
 
-    const requests = await this.prisma.transportRequest.findMany({
-      where: { transporterId: profile.id },
-      include: {
-        farmer: { select: { id: true, name: true, phoneNumber: true } },
-        vehicle: { select: { id: true, type: true, model: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const whereClause: Prisma.TransportRequestWhereInput = {
+      transporterId: profile.id,
+      status: statuses?.length
+        ? { in: statuses.map(s => s.toUpperCase()) as Prisma.EnumTransportRequestStatusFilter['in'] }
+        : undefined,
+    };
 
-    return requests.map((req) => ({
+    const [total, requests] = await this.prisma.$transaction([
+      this.prisma.transportRequest.count({ where: whereClause }),
+      this.prisma.transportRequest.findMany({
+        where: whereClause,
+        include: {
+          farmer: { select: { id: true, name: true, phoneNumber: true } },
+          vehicle: { select: { id: true, type: true, model: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      })
+    ]);
+
+    // For each request, fetch the booked dates of its vehicle so the
+    // transporter's date-picker can grey them out when suggesting a new date
+    const vehicleIds = [...new Set(requests.map(r => r.vehicleId))];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const bookedRows = vehicleIds.length > 0
+      ? await this.prisma.transportRequest.findMany({
+          where: {
+            vehicleId: { in: vehicleIds },
+            status: { in: ['SCHEDULED', 'ACCEPTED'] },
+            requiredDate: { gte: today },
+          },
+          select: { vehicleId: true, requiredDate: true, suggestedDate: true },
+        })
+      : [];
+
+    // vehicleId → Set of YYYY-MM-DD booked date strings
+    const bookedByVehicle = new Map<string, Set<string>>();
+    for (const row of bookedRows) {
+      if (!bookedByVehicle.has(row.vehicleId)) bookedByVehicle.set(row.vehicleId, new Set());
+      const d = row.suggestedDate ?? row.requiredDate;
+      bookedByVehicle.get(row.vehicleId)!.add(d.toISOString().split('T')[0]);
+    }
+
+    const mappedData = requests.map((req) => ({
       ...req,
       farmer: {
         ...req.farmer,
@@ -342,34 +492,85 @@ export class TransporterService {
           ? req.farmer.phoneNumber
           : undefined,
       },
+      // Array of YYYY-MM-DD strings where this vehicle is already booked
+      vehicleBookedDates: [...(bookedByVehicle.get(req.vehicleId) ?? [])],
     }));
+
+    return {
+      data: mappedData,
+      meta: {
+        total,
+        page,
+        limit,
+        hasMore: skip + requests.length < total
+      }
+    };
   }
 
-  async getFarmerRequests({ farmerId, page = 1, limit = 100, statuses }: any) {
+  async getFarmerRequests({
+    farmerId,
+    page = 1,
+    limit = 100,
+    statuses,
+  }: {
+    farmerId: string;
+    page?: number;
+    limit?: number;
+    statuses?: string[];
+  }) {
     const skip = (page - 1) * limit;
-    const whereClause: any = { farmerId };
-    if (statuses?.length > 0) whereClause.status = { in: statuses.map((s: string) => s.toUpperCase()) };
+
+    const where: Prisma.TransportRequestWhereInput = {
+      farmerId,
+      status: statuses?.length
+        ? { in: statuses.map(s => s.toUpperCase()) as Prisma.EnumTransportRequestStatusFilter['in'] }
+        : undefined,
+    };
 
     const requests = await this.prisma.transportRequest.findMany({
-      where: whereClause,
-      include: {
+      where,
+      // Flat select instead of 3-level nested include — eliminates N+1 query chains
+      select: {
+        id: true,
+        status: true,
+        pickup: true,
+        drop: true,
+        crop: true,
+        quantity: true,
+        requiredDate: true,
+        suggestedDate: true,
+        cancellationReason: true,
+        createdAt: true,
+        updatedAt: true,
         vehicle: {
-          include: {
-            transporter: { include: { user: { select: { name: true, phoneNumber: true } } } }
-          }
-        }
+          select: {
+            id: true,
+            type: true,
+            model: true,
+            capacity: true,
+            operatingArea: true,
+            transporter: {
+              select: {
+                user: { select: { name: true, phoneNumber: true } },
+              },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
     });
 
-    return requests.map((req) => ({
+    const PHONE_VISIBLE_STATUSES = new Set(['SCHEDULED', 'ACCEPTED', 'COMPLETED']);
+
+    return requests.map(req => ({
       ...req,
       transporter: {
-        name: req.vehicle.transporter.user.name,
-        phoneNumber: ['SCHEDULED', 'ACCEPTED', 'COMPLETED'].includes(req.status)
-          ? req.vehicle.transporter.user.phoneNumber
+        name: req.vehicle?.transporter?.user?.name ?? null,
+        // Privacy gate — phone only after booking confirmed
+        phoneNumber: PHONE_VISIBLE_STATUSES.has(req.status)
+          ? (req.vehicle?.transporter?.user?.phoneNumber ?? null)
           : null,
       },
     }));
@@ -382,37 +583,314 @@ export class TransporterService {
     const request = await this.prisma.transportRequest.findUnique({ where: { id: requestId } });
     if (!request || request.transporterId !== profile.id) throw new ForbiddenException('Unauthorized');
 
+    // Only allow responding to SENT requests
+    if (request.status !== 'SENT') {
+      throw new BadRequestException(`Cannot respond to a request with status: ${request.status}`);
+    }
+
     if (dto.action === 'accept') {
-      const date = new Date(request.requiredDate);
-      date.setHours(0, 0, 0, 0);
+      const reqDate = new Date(request.requiredDate);
+      const date = new Date(Date.UTC(reqDate.getUTCFullYear(), reqDate.getUTCMonth(), reqDate.getUTCDate()));
       await this.prisma.vehicleAvailability.upsert({
         where: { vehicleId_date: { vehicleId: request.vehicleId, date } },
         create: { vehicleId: request.vehicleId, date, state: 'BUSY' },
         update: { state: 'BUSY' },
       });
-      return this.prisma.transportRequest.update({ where: { id: requestId }, data: { status: 'SCHEDULED' } });
+      const updated = await this.prisma.transportRequest.update({ where: { id: requestId }, data: { status: 'SCHEDULED' } });
+      // Notify farmer — request accepted
+      this.notifications.createNotification({
+        userId: request.farmerId,
+        title: '✅ Transport Request Accepted',
+        message: 'Your transport request has been accepted and is now scheduled.',
+        type: 'SUCCESS',
+        link: '/(farmer)/transport/my-requests',
+      }).catch(() => { });
+      return updated;
     }
 
     if (dto.action === 'reject') {
-      return this.prisma.transportRequest.update({ where: { id: requestId }, data: { status: 'REJECTED', rejectedAt: new Date() } });
+      const updated = await this.prisma.transportRequest.update({ where: { id: requestId }, data: { status: 'REJECTED', rejectedAt: new Date() } });
+      // Notify farmer — request rejected
+      this.notifications.createNotification({
+        userId: request.farmerId,
+        title: '❌ Transport Request Rejected',
+        message: 'Your transport request was declined by the transporter. Please try another vehicle.',
+        type: 'WARNING',
+        link: '/(farmer)/transport/search',
+      }).catch(() => { });
+      return updated;
     }
 
     if (dto.action === 'suggest') {
-      return this.prisma.transportRequest.update({ where: { id: requestId }, data: { suggestedDate: new Date(dto.suggestedDate!) } });
+      if (!dto.suggestedDate) throw new BadRequestException('suggestedDate is required for suggest action');
+      const suggestedDateParsed = new Date(dto.suggestedDate);
+      if (isNaN(suggestedDateParsed.getTime())) throw new BadRequestException('Invalid suggestedDate format. Use YYYY-MM-DD.');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (suggestedDateParsed < today) throw new BadRequestException('Suggested date must be today or in the future');
+
+      // Must suggest a DIFFERENT date from the farmer's original request
+      const reqDateNorm = new Date(Date.UTC(
+        request.requiredDate.getUTCFullYear(),
+        request.requiredDate.getUTCMonth(),
+        request.requiredDate.getUTCDate(),
+      ));
+      const sugNorm = new Date(Date.UTC(
+        suggestedDateParsed.getUTCFullYear(),
+        suggestedDateParsed.getUTCMonth(),
+        suggestedDateParsed.getUTCDate(),
+      ));
+      if (sugNorm.getTime() === reqDateNorm.getTime()) {
+        const dateLabel = reqDateNorm.toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+        });
+        throw new BadRequestException(
+          `${dateLabel} is the farmer's original requested date. Please suggest a different date.`,
+        );
+      }
+
+      // Check if vehicle is already booked (SCHEDULED/ACCEPTED) on the suggested date
+      const dayStart = new Date(Date.UTC(suggestedDateParsed.getUTCFullYear(), suggestedDateParsed.getUTCMonth(), suggestedDateParsed.getUTCDate()));
+      const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+      const conflict = await this.prisma.transportRequest.findFirst({
+        where: {
+          vehicleId: request.vehicleId,
+          id: { not: requestId }, // exclude the current request
+          status: { in: ['SCHEDULED', 'ACCEPTED'] },
+          OR: [
+            { requiredDate: { gte: dayStart, lt: dayEnd } },
+            { suggestedDate: { gte: dayStart, lt: dayEnd } },
+          ],
+        },
+      });
+      if (conflict) {
+        const dateLabel = dayStart.toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+        });
+        throw new BadRequestException(
+          `Vehicle is already booked on ${dateLabel}. Please choose a different date.`,
+        );
+      }
+
+      const updated = await this.prisma.transportRequest.update({ where: { id: requestId }, data: { suggestedDate: suggestedDateParsed } });
+      // Notify farmer — transporter suggested a new date
+      this.notifications.createNotification({
+        userId: request.farmerId,
+        title: '📅 New Date Suggested',
+        message: `The transporter suggested a new date: ${dto.suggestedDate}. Please accept or decline.`,
+        type: 'INFO',
+        link: '/(farmer)/transport/my-requests',
+      }).catch(() => { });
+      return updated;
     }
   }
 
   async markRequestComplete(userId: string, requestId: string) {
-    return this.prisma.transportRequest.update({ where: { id: requestId }, data: { status: 'COMPLETED' } });
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const request = await this.prisma.transportRequest.findUnique({ where: { id: requestId } });
+    if (!request) throw new NotFoundException('Transport request not found');
+
+    // Ownership check
+    if (user.role === 'TRANSPORTER') {
+      const profile = await this.prisma.transporterProfile.findUnique({ where: { userId } });
+      if (!profile || request.transporterId !== profile.id) {
+        throw new ForbiddenException('Not authorized to update this request');
+      }
+      // Transporter can only mark SCHEDULED trips as AWAITING_APPROVAL
+      if (request.status !== 'SCHEDULED') {
+        throw new BadRequestException(`Trip must be in SCHEDULED state. Current: ${request.status}`);
+      }
+      const updated = await this.prisma.transportRequest.update({
+        where: { id: requestId },
+        data: { status: 'AWAITING_APPROVAL' },
+      });
+      // Notify farmer to confirm completion
+      this.notifications.createNotification({
+        userId: request.farmerId,
+        title: '🏁 Trip Completed — Your Approval Needed',
+        message: 'The transporter has marked this trip as done. Please confirm to release payment.',
+        type: 'INFO',
+        link: '/(farmer)/transport/my-requests',
+      }).catch(() => { });
+      return updated;
+    } else {
+      // Farmer can only approve AWAITING_APPROVAL trips
+      if (request.farmerId !== userId) {
+        throw new ForbiddenException('Not authorized to update this request');
+      }
+      if (request.status !== 'AWAITING_APPROVAL') {
+        throw new BadRequestException(`Trip must be in AWAITING_APPROVAL state. Current: ${request.status}`);
+      }
+      const updated = await this.prisma.transportRequest.update({
+        where: { id: requestId },
+        data: { status: 'COMPLETED' },
+      });
+
+      // Reset vehicle status to AVAILABLE — both the calendar entry and the global flag
+      const rawDate = request.suggestedDate ? new Date(request.suggestedDate) : new Date(request.requiredDate);
+      const dateToFree = new Date(Date.UTC(rawDate.getUTCFullYear(), rawDate.getUTCMonth(), rawDate.getUTCDate()));
+      await Promise.all([
+        this.prisma.vehicleAvailability.updateMany({
+          where: { vehicleId: request.vehicleId, date: dateToFree },
+          data: { state: 'AVAILABLE' },
+        }),
+        this.prisma.vehicle.update({
+          where: { id: request.vehicleId },
+          data: { isAvailable: true },
+        }),
+      ]).catch(e => console.error('Failed to reset vehicle availability on completion', e));
+
+      // Find transporter's userId to notify them
+      const transporterProfile = await this.prisma.transporterProfile.findUnique({
+        where: { id: request.transporterId },
+        select: { userId: true },
+      });
+      if (transporterProfile) {
+        this.notifications.createNotification({
+          userId: transporterProfile.userId,
+          title: '✅ Trip Confirmed Completed',
+          message: 'The farmer has confirmed the trip is completed. Well done!',
+          type: 'SUCCESS',
+          link: '/(transporter)',
+        }).catch(() => { });
+      }
+      return updated;
+    }
   }
 
   async cancelTransportRequest(userId: string, requestId: string, dto: CancelRequestDto) {
-    return this.prisma.transportRequest.update({ where: { id: requestId }, data: { status: 'CANCELLED', cancellationReason: dto.reason, cancelledById: userId } });
+    const request = await this.prisma.transportRequest.findUnique({ where: { id: requestId } });
+    if (!request) throw new NotFoundException('Transport request not found');
+
+    // Ownership check — both farmer and transporter (via profile) may cancel
+    const profile = await this.prisma.transporterProfile.findUnique({ where: { userId } });
+    const isOwner = request.farmerId === userId || (profile && request.transporterId === profile.id);
+    if (!isOwner) throw new ForbiddenException('Not authorized to cancel this request');
+
+    // Only allow cancellation of active requests
+    const cancellableStatuses = ['SENT', 'SCHEDULED', 'ACCEPTED', 'AWAITING_APPROVAL'];
+    if (!cancellableStatuses.includes(request.status)) {
+      throw new BadRequestException(`Cannot cancel a request with status: ${request.status}`);
+    }
+
+    const updated = await this.prisma.transportRequest.update({
+      where: { id: requestId },
+      data: { status: 'CANCELLED', cancellationReason: dto.reason, cancelledById: userId },
+    });
+
+    // If the trip was already scheduled and is now cancelled, free up the vehicle's availability
+    if (['SCHEDULED', 'ACCEPTED', 'AWAITING_APPROVAL'].includes(request.status)) {
+      const rawDate = request.suggestedDate ? new Date(request.suggestedDate) : new Date(request.requiredDate);
+      const dateToFree = new Date(Date.UTC(rawDate.getUTCFullYear(), rawDate.getUTCMonth(), rawDate.getUTCDate()));
+      await Promise.all([
+        this.prisma.vehicleAvailability.updateMany({
+          where: { vehicleId: request.vehicleId, date: dateToFree },
+          data: { state: 'AVAILABLE' },
+        }),
+        this.prisma.vehicle.update({
+          where: { id: request.vehicleId },
+          data: { isAvailable: true },
+        }),
+      ]).catch(e => console.error('Failed to reset vehicle availability on cancel', e));
+    }
+
+    // Notify the other party
+    if (request.farmerId === userId) {
+      // Farmer cancelled — notify transporter
+      const transporterProfile = await this.prisma.transporterProfile.findUnique({
+        where: { id: request.transporterId },
+        select: { userId: true },
+      });
+      if (transporterProfile) {
+        this.notifications.createNotification({
+          userId: transporterProfile.userId,
+          title: '🚫 Trip Cancelled by Farmer',
+          message: `Reason: ${dto.reason}`,
+          type: 'WARNING',
+          link: '/(transporter)',
+        }).catch(() => { });
+      }
+    } else {
+      // Transporter cancelled — notify farmer
+      this.notifications.createNotification({
+        userId: request.farmerId,
+        title: '🚫 Trip Cancelled by Transporter',
+        message: `Reason: ${dto.reason}. Please find another transporter.`,
+        type: 'WARNING',
+        link: '/(farmer)/transport/search',
+      }).catch(() => { });
+    }
+
+    return updated;
   }
 
   async confirmSuggestion(userId: string, requestId: string, dto: ConfirmSuggestionDto) {
-    const status = dto.accept ? 'SCHEDULED' : 'CANCELLED';
-    return this.prisma.transportRequest.update({ where: { id: requestId }, data: { status } });
+    const request = await this.prisma.transportRequest.findUnique({ where: { id: requestId } });
+    if (!request) throw new NotFoundException('Transport request not found');
+
+    // Only the farmer who owns this request can confirm a suggestion
+    if (request.farmerId !== userId) throw new ForbiddenException('Not authorized');
+
+    // Must be in SENT status with a suggestedDate
+    if (request.status !== 'SENT') {
+      throw new BadRequestException(`Request must be in SENT state to confirm suggestion. Current: ${request.status}`);
+    }
+    if (!request.suggestedDate) {
+      throw new BadRequestException('No suggested date found on this request');
+    }
+
+    if (dto.accept) {
+      // Mark vehicle as BUSY on the new suggested date
+      const reqDate = new Date(request.suggestedDate);
+      const date = new Date(Date.UTC(reqDate.getUTCFullYear(), reqDate.getUTCMonth(), reqDate.getUTCDate()));
+      await this.prisma.vehicleAvailability.upsert({
+        where: { vehicleId_date: { vehicleId: request.vehicleId, date } },
+        create: { vehicleId: request.vehicleId, date, state: 'BUSY' },
+        update: { state: 'BUSY' },
+      });
+      const updated = await this.prisma.transportRequest.update({
+        where: { id: requestId },
+        data: { status: 'SCHEDULED' },
+      });
+      // Notify transporter — farmer accepted the new date
+      const transporterProfile = await this.prisma.transporterProfile.findUnique({
+        where: { id: request.transporterId },
+        select: { userId: true },
+      });
+      if (transporterProfile) {
+        this.notifications.createNotification({
+          userId: transporterProfile.userId,
+          title: '✅ Date Suggestion Accepted',
+          message: 'The farmer accepted your suggested date. The trip is now scheduled!',
+          type: 'SUCCESS',
+          link: '/(transporter)',
+        }).catch(() => { });
+      }
+      return updated;
+    } else {
+      // Farmer declined the suggestion — cancel the request
+      const updated = await this.prisma.transportRequest.update({
+        where: { id: requestId },
+        data: { status: 'CANCELLED', cancellationReason: 'Farmer declined suggested date', cancelledById: userId },
+      });
+      // Notify transporter — farmer declined
+      const transporterProfile = await this.prisma.transporterProfile.findUnique({
+        where: { id: request.transporterId },
+        select: { userId: true },
+      });
+      if (transporterProfile) {
+        this.notifications.createNotification({
+          userId: transporterProfile.userId,
+          title: '❌ Date Suggestion Declined',
+          message: 'The farmer declined your suggested date. The request has been cancelled.',
+          type: 'WARNING',
+          link: '/(transporter)',
+        }).catch(() => { });
+      }
+      return updated;
+    }
   }
 
   async getFarmerTrips(farmerId: string) {

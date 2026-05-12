@@ -1,82 +1,113 @@
 import * as crypto from 'crypto';
 
 export class CryptoUtil {
-  private static readonly ALGORITHM = 'aes-256-gcm';
-  private static readonly IV_LENGTH = 16;
-  private static readonly AUTH_TAG_LENGTH = 16;
+  // ── RSA-4096 + AES-256-GCM hybrid (current) ─────────────────────────────
 
-  private static get SHARED_SECRET_KEY(): string {
-    return process.env.AES_SECRET_KEY || 'KrushimitraSuperSecretKey2026!@#';
+  private static get RSA_PRIVATE_KEY(): string {
+    const key = process.env.RSA_PRIVATE_KEY;
+    if (!key) throw new Error('RSA_PRIVATE_KEY environment variable is required');
+    return Buffer.from(key, 'base64').toString('utf8');
   }
 
   /**
-   * Decrypts an AES-256-GCM encrypted payload
-   * Format: base64(iv:auth_tag:encrypted_data)
+   * Decrypts an RSA+AES hybrid payload from the frontend.
+   * Frontend encrypts a fresh AES-256 key with RSA-OAEP (SHA-256),
+   * then encrypts the body with AES-256-GCM.
+   *
+   * Returns the decrypted body AND the AES key so the response can be
+   * encrypted with the same per-request key (forward secrecy per request).
    */
-  static decryptPayload(encryptedPayload: string, _unusedKey?: string): any {
+  static decryptHybridPayload(body: {
+    encryptedKey: string; // base64 — RSA-OAEP encrypted AES key
+    iv:           string; // hex   — AES-GCM IV
+    authTag:      string; // hex   — AES-GCM auth tag
+    payload:      string; // base64 — AES-GCM ciphertext
+  }): { data: any; aesKey: Buffer } {
     try {
-      const cleanedPayload = encryptedPayload.replace(/\s/g, '');
-      const buffer = Buffer.from(cleanedPayload, 'base64');
-      const payloadString = buffer.toString('utf8');
-      const [ivHex, authTagHex, encryptedData] = payloadString.split(':');
+      const privateKey = crypto.createPrivateKey({ key: this.RSA_PRIVATE_KEY, format: 'pem' });
 
-      if (!ivHex || !authTagHex || !encryptedData) {
-        throw new Error('Malformed encrypted payload structure');
-      }
+      const aesKey = crypto.privateDecrypt(
+        { key: privateKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' },
+        Buffer.from(body.encryptedKey, 'base64'),
+      );
 
-      // Prepare Key (Simple SHA-256 hash of secret) - Matches Frontend
-      const key = crypto
-        .createHash('sha256')
-        .update(this.SHARED_SECRET_KEY, 'utf8')
-        .digest();
-
-      // Decrypt Data using AES-GCM
-      const iv = Buffer.from(ivHex, 'hex');
-      const authTag = Buffer.from(authTagHex, 'hex');
-      const decipher = crypto.createDecipheriv(this.ALGORITHM, key, iv);
+      const iv      = Buffer.from(body.iv, 'hex');
+      const authTag = Buffer.from(body.authTag, 'hex');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', aesKey, iv);
       decipher.setAuthTag(authTag);
 
-      let decrypted = decipher.update(encryptedData, 'base64', 'utf8');
+      let decrypted = decipher.update(body.payload, 'base64', 'utf8');
       decrypted += decipher.final('utf8');
 
-      return JSON.parse(decrypted);
-    } catch (error) {
-      console.error('Decryption failed:', error.message);
-      throw new Error(`Decryption failed: ${error.message}`);
+      return { data: JSON.parse(decrypted), aesKey };
+    } catch (e: any) {
+      // Re-throw with the real OpenSSL error so it can be logged and diagnosed
+      throw new Error(`Hybrid decryption failed: ${e?.message ?? e}`);
     }
   }
 
   /**
-   * Encrypts a payload using AES-256-GCM
-   * Format: base64(iv:auth_tag:encrypted_data)
+   * Encrypts the response with the per-request AES key supplied by the client.
+   * Returns a compact base64 envelope: base64( JSON{ iv, authTag, payload } )
    */
-  static encryptPayload(data: any, _unusedKey?: string): string {
+  static encryptWithAesKey(data: any, aesKey: Buffer): string {
     try {
-      const jsonData = JSON.stringify(data);
-
-      // Prepare Key (Simple SHA-256 hash of secret)
-      const key = crypto
-        .createHash('sha256')
-        .update(this.SHARED_SECRET_KEY, 'utf8')
-        .digest();
-      const iv = crypto.randomBytes(this.IV_LENGTH);
-
-      // Encrypt Data using AES-GCM
-      const cipher = crypto.createCipheriv(this.ALGORITHM, key, iv);
-      let encrypted = cipher.update(jsonData, 'utf8', 'base64');
-      encrypted += cipher.final('base64');
+      const iv     = crypto.randomBytes(16);
+      const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv);
+      let encrypted = cipher.update(JSON.stringify(data), 'utf8', 'base64');
+      encrypted    += cipher.final('base64');
       const authTag = cipher.getAuthTag();
 
-      // Construct Final Payload: iv:auth_tag:encrypted_data
-      const finalPayload = [
-        iv.toString('hex'),
-        authTag.toString('hex'),
-        encrypted,
-      ].join(':');
+      return Buffer.from(JSON.stringify({
+        iv:      iv.toString('hex'),
+        authTag: authTag.toString('hex'),
+        payload: encrypted,
+      })).toString('base64');
+    } catch {
+      throw new Error('Response encryption failed');
+    }
+  }
 
-      return Buffer.from(finalPayload).toString('base64');
-    } catch (error) {
-      console.error('Encryption failed:', error.message);
+  // ── Legacy shared-secret AES-256-GCM (kept for graceful migration) ───────
+
+  private static get SHARED_SECRET_KEY(): string {
+    const key = process.env.AES_SECRET_KEY;
+    if (!key) throw new Error('AES_SECRET_KEY environment variable is required');
+    return key;
+  }
+
+  static decryptPayload(encryptedPayload: string): any {
+    try {
+      const buffer        = Buffer.from(encryptedPayload.replace(/\s/g, ''), 'base64');
+      const payloadString = buffer.toString('utf8');
+      const [ivHex, authTagHex, encryptedData] = payloadString.split(':');
+      if (!ivHex || !authTagHex || !encryptedData) throw new Error('Malformed payload');
+
+      const key     = crypto.createHash('sha256').update(this.SHARED_SECRET_KEY, 'utf8').digest();
+      const iv      = Buffer.from(ivHex, 'hex');
+      const authTag = Buffer.from(authTagHex, 'hex');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+      decipher.setAuthTag(authTag);
+
+      let decrypted = decipher.update(encryptedData, 'base64', 'utf8');
+      decrypted    += decipher.final('utf8');
+      return JSON.parse(decrypted);
+    } catch {
+      throw new Error('Decryption failed');
+    }
+  }
+
+  static encryptPayload(data: any): string {
+    try {
+      const key       = crypto.createHash('sha256').update(this.SHARED_SECRET_KEY, 'utf8').digest();
+      const iv        = crypto.randomBytes(16);
+      const cipher    = crypto.createCipheriv('aes-256-gcm', key, iv);
+      let encrypted   = cipher.update(JSON.stringify(data), 'utf8', 'base64');
+      encrypted      += cipher.final('base64');
+      const authTag   = cipher.getAuthTag();
+
+      return Buffer.from([iv.toString('hex'), authTag.toString('hex'), encrypted].join(':')).toString('base64');
+    } catch {
       throw new Error('Encryption failed');
     }
   }

@@ -10,23 +10,7 @@ export class AppController {
     return this.appService.getHello();
   }
 
-  @Get('init-database')
-  async initDatabase() {
-    return new Promise((resolve) => {
-      const { exec } = require('child_process');
-      exec(
-        'npx prisma db push --accept-data-loss',
-        (error: any, stdout: any, stderr: any) => {
-          if (error) {
-            console.error(`exec error: ${error}`);
-            resolve(`Error: ${error.message} \nStderr: ${stderr}`);
-            return;
-          }
-          console.log(`stdout: ${stdout}`);
-          console.log(`stderr: ${stderr}`);
-          resolve(`Success! Database synced.\nStdout: ${stdout}`);
-        },
-      );
-    });
-  }
+  // ⚠️  /init-database removed — it executed `prisma db push --accept-data-loss`
+  // without authentication, giving any caller the ability to wipe production data.
+  // Run migrations via CI/CD pipeline only: `npx prisma migrate deploy`
 }

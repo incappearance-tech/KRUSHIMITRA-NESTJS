@@ -9,16 +9,29 @@
     "build": "npx prisma generate && npx nest build",
     "db:push": "npx prisma db push",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
+
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+
+    "seed:rent":    "npx ts-node prisma/seed-rent-machines.ts",
+    "seed:all":     "npx ts-node prisma/seed-scenarios.ts",
+    "redis:up":     "docker-compose -f docker-compose.dev.yml up -d",
+    "redis:down":   "docker-compose -f docker-compose.dev.yml down",
+    "redis:logs":   "docker-compose -f docker-compose.dev.yml logs -f redis",
+    "redis:cli":    "docker exec -it krushimitra_redis_dev redis-cli",
+    "redis:flush":  "docker exec -it krushimitra_redis_dev redis-cli FLUSHALL",
+    "redis:status": "docker exec -it krushimitra_redis_dev redis-cli INFO server | findstr redis_version",
+
+    "dev": "npm run redis:up && nest start --watch"
   },
   "dependencies": {
     "@fastify/compress": "^8.3.1",
