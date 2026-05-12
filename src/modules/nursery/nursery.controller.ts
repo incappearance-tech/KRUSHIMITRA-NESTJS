@@ -113,6 +113,13 @@ export class NurseryController {
     return this.nurseryService.toggleProductAvailability(userId, productId);
   }
 
+  @Get('products/expiring')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Get products whose subscriptions expire within 7 days' })
+  getExpiringProducts(@GetUser('id') userId: string) {
+    return this.nurseryService.getExpiringProducts(userId);
+  }
+
   @Get('enquiries')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Get incoming enquiries for nursery owner' })

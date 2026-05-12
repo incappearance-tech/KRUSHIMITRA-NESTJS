@@ -465,6 +465,12 @@ model NurseryProduct {
   whatsappNumber    String?
   isAvailable       Boolean                @default(true)
   season            String?                // Monsoon, Summer, Winter, All Year
+
+  // Subscription fields
+  plan              String?                // monthly, quarterly, yearly
+  planActivatedAt   DateTime?
+  planExpiresAt     DateTime?
+
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
 
@@ -475,6 +481,7 @@ model NurseryProduct {
   @@index([isAvailable])
   @@index([category, isAvailable])
   @@index([nurseryId, isAvailable])
+  @@index([planExpiresAt])
 }
 
 model NurseryEnquiry {

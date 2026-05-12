@@ -144,6 +144,10 @@ export class PaymentsService {
         await this.activateVehicleSubscription(payment.entityId, payment.amount);
         await this.notifySubscriptionActivated(userId, payment.entityId, payment.amount);
       }
+      if (payment.type === 'NURSERY_PRODUCT_SUBSCRIPTION' && payment.entityId) {
+        await this.activateNurseryProductSubscription(payment.entityId, payment.amount);
+        await this.notifyNurseryProductSubscriptionActivated(userId, payment.entityId, payment.amount);
+      }
     }
 
     this.logger.log(`Payment verified for user ${userId}, order ${dto.razorpayOrderId}`);
@@ -190,6 +194,10 @@ export class PaymentsService {
               await this.activateVehicleSubscription(record.entityId, record.amount);
               await this.notifySubscriptionActivated(userId, record.entityId, record.amount);
             }
+            if (record.type === 'NURSERY_PRODUCT_SUBSCRIPTION' && record.entityId) {
+              await this.activateNurseryProductSubscription(record.entityId, record.amount);
+              await this.notifyNurseryProductSubscriptionActivated(userId, record.entityId, record.amount);
+            }
             return { status: 'PAID', entityId: record.entityId, recovered: true };
           }
         } else if (order.status === 'created' || order.status === 'attempted') {
@@ -213,6 +221,7 @@ export class PaymentsService {
     const enriched = await Promise.all(
       records.map(async (r) => {
         let vehicleInfo = null;
+        let productInfo = null;
         if (r.type === 'SUBSCRIPTION' && r.entityId) {
           const v = await this.prisma.vehicle.findUnique({
             where: { id: r.entityId },
@@ -220,7 +229,14 @@ export class PaymentsService {
           });
           if (v) vehicleInfo = { model: v.model, type: v.type, number: v.numberPlate };
         }
-        return { ...r, amount: r.amount ? Number(r.amount) : 0, vehicleInfo };
+        if (r.type === 'NURSERY_PRODUCT_SUBSCRIPTION' && r.entityId) {
+          const p = await this.prisma.nurseryProduct.findUnique({
+            where: { id: r.entityId },
+            select: { name: true, category: true, planExpiresAt: true },
+          });
+          if (p) productInfo = { name: p.name, category: p.category, planExpiresAt: p.planExpiresAt };
+        }
+        return { ...r, amount: r.amount ? Number(r.amount) : 0, vehicleInfo, productInfo };
       }),
     );
 
@@ -293,6 +309,10 @@ export class PaymentsService {
         if (p.type === 'SUBSCRIPTION' && p.entityId) {
           await this.activateVehicleSubscription(p.entityId, p.amount);
           await this.notifySubscriptionActivated(p.userId, p.entityId, p.amount);
+        }
+        if (p.type === 'NURSERY_PRODUCT_SUBSCRIPTION' && p.entityId) {
+          await this.activateNurseryProductSubscription(p.entityId, p.amount);
+          await this.notifyNurseryProductSubscriptionActivated(p.userId, p.entityId, p.amount);
         }
       }
 
@@ -385,6 +405,112 @@ export class PaymentsService {
       });
     } catch (err) {
       this.logger.warn(`Failed to send subscription notification: ${err}`);
+    }
+  }
+
+  private async activateNurseryProductSubscription(productId: string, amountPaid: any) {
+    const amount = Number(amountPaid);
+    let daysToAdd = 30;
+    if (amount >= 3999) daysToAdd = 365;
+    else if (amount >= 1199) daysToAdd = 90;
+
+    const planName = daysToAdd === 365 ? 'yearly' : daysToAdd === 90 ? 'quarterly' : 'monthly';
+    const now = new Date();
+    const planExpiresAt = new Date();
+    planExpiresAt.setDate(planExpiresAt.getDate() + daysToAdd);
+
+    try {
+      await this.prisma.nurseryProduct.update({
+        where: { id: productId },
+        data: { plan: planName, planActivatedAt: now, planExpiresAt, isAvailable: true },
+      });
+      this.logger.log(`NurseryProduct ${productId} subscription: ${planName} until ${planExpiresAt.toISOString()}`);
+    } catch (err) {
+      this.logger.warn(`Failed to update nursery product subscription for ${productId}: ${err}`);
+    }
+  }
+
+  private async notifyNurseryProductSubscriptionActivated(userId: string, productId: string, amount: any) {
+    try {
+      const amountNum = Number(amount);
+      const planName = amountNum >= 3999 ? 'Yearly' : amountNum >= 1199 ? 'Quarterly' : 'Monthly';
+      const product = await this.prisma.nurseryProduct.findUnique({
+        where: { id: productId },
+        select: { name: true },
+      });
+      await this.prisma.notification.create({
+        data: {
+          userId,
+          title: '✅ Product Listing Active',
+          message: `Your ${planName} listing for "${product?.name || 'product'}" is now visible to farmers!`,
+          type: 'SUCCESS',
+          link: '/(nursery)/products',
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`Failed to send nursery product subscription notification: ${err}`);
+    }
+  }
+
+  // ── Daily cron: send expiry warnings and deactivate expired nursery products ─
+  @Cron(CronExpression.EVERY_DAY_AT_8AM)
+  async handleNurseryProductExpiry() {
+    const now = new Date();
+    const sevenDaysLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    // Deactivate products whose subscription has expired
+    const expired = await this.prisma.nurseryProduct.findMany({
+      where: {
+        plan: { not: null },
+        planExpiresAt: { lt: now },
+        isAvailable: true,
+      },
+      include: { nursery: { select: { userId: true, nurseryName: true } } },
+    });
+
+    for (const product of expired) {
+      await this.prisma.nurseryProduct.update({
+        where: { id: product.id },
+        data: { isAvailable: false },
+      });
+      await this.prisma.notification.create({
+        data: {
+          userId: product.nursery.userId,
+          title: '⚠️ Listing Expired',
+          message: `"${product.name}" listing has expired and is no longer visible to farmers. Renew to reactivate.`,
+          type: 'WARNING',
+          link: '/(nursery)/products',
+        },
+      });
+    }
+
+    // Notify products expiring within 7 days
+    const expiringSoon = await this.prisma.nurseryProduct.findMany({
+      where: {
+        plan: { not: null },
+        planExpiresAt: { gte: now, lte: sevenDaysLater },
+        isAvailable: true,
+      },
+      include: { nursery: { select: { userId: true } } },
+    });
+
+    for (const product of expiringSoon) {
+      const daysLeft = Math.ceil((product.planExpiresAt!.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      await this.prisma.notification.create({
+        data: {
+          userId: product.nursery.userId,
+          title: '⏰ Listing Expiring Soon',
+          message: `"${product.name}" listing expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}. Renew now to stay visible.`,
+          type: 'WARNING',
+          link: '/(nursery)/products',
+        },
+      });
+    }
+
+    if (expired.length > 0 || expiringSoon.length > 0) {
+      this.logger.log(
+        `Nursery expiry cron: ${expired.length} deactivated, ${expiringSoon.length} warned`,
+      );
     }
   }
 }

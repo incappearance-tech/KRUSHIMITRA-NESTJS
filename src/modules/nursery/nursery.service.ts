@@ -367,6 +367,7 @@ export class NurseryService {
       'p."isAvailable" = true',
       'np."isActive" = true',
       'u."isVerified" = true',
+      '(p."plan" IS NULL OR p."planExpiresAt" > NOW())',
     ];
 
     if (filters.category) {
@@ -638,6 +639,24 @@ export class NurseryService {
     return this.prisma.nurseryEnquiry.update({
       where: { id: enquiryId },
       data: { status: 'closed' },
+    });
+  }
+
+  // --- SUBSCRIPTIONS ---
+
+  async getExpiringProducts(userId: string) {
+    const profile = await this.prisma.nurseryProfile.findUnique({ where: { userId } });
+    if (!profile) return [];
+
+    const sevenDaysLater = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    return this.prisma.nurseryProduct.findMany({
+      where: {
+        nurseryId: profile.id,
+        plan: { not: null },
+        planExpiresAt: { gte: new Date(), lte: sevenDaysLater },
+      },
+      select: { id: true, name: true, plan: true, planExpiresAt: true },
     });
   }
 }
