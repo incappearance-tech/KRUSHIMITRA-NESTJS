@@ -12,18 +12,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private configService: ConfigService,
     private prisma: PrismaService,
     private redis: RedisService,
+    // PrismaService already injected above — used directly for AuditLog writes
   ) {
     const jwtSecret = configService.get<string>('JWT_SECRET');
     if (!jwtSecret) throw new Error('JWT_SECRET environment variable is required');
 
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      ignoreExpiration: false,
-      secretOrKey: jwtSecret,
+      jwtFromRequest:    ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ignoreExpiration:  false,
+      secretOrKey:       jwtSecret,
+      passReqToCallback: true, // needed for device-binding header check
     });
   }
 
-  async validate(payload: any) {
+  async validate(request: any, payload: any) {
     // 1. Check Redis whitelist using the jti (JWT ID) claim.
     //    verifyOtp stores a random UUID as the session token; we compare it here.
     //    Using a random UUID means a Redis compromise yields UUIDs, not raw JWTs.
@@ -43,7 +45,27 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Session expired or logged out');
     }
 
-    // 2. Verify user still exists
+    // 2. Soft device-binding check — log mismatch but do not hard-block
+    //    (prevents locking out users who reinstalled the app)
+    const tokenIid  = payload.iid as string | null | undefined;
+    const headerIid = request.headers?.['x-instance-id'] as string | undefined;
+    if (tokenIid && headerIid && tokenIid !== headerIid) {
+      // Write to AuditLog (fire-and-forget) so security team can review anomalies
+      this.prisma.auditLog.create({
+        data: {
+          userId:   payload.sub,
+          action:   'DEVICE_BINDING_MISMATCH',
+          resource: 'auth',
+          details:  {
+            tokenIid,
+            requestIid: headerIid,
+            url: request.url,
+          },
+        },
+      }).catch(() => { /* non-critical */ });
+    }
+
+    // 3. Verify user still exists
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       select: {

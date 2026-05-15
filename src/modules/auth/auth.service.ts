@@ -127,11 +127,12 @@ export class AuthService {
 
         const consentData = { privacyConsent: true, consentTimestamp: new Date() };
 
-        const normalizedRole = (role ? role.toUpperCase() : 'GUEST') as
-            | 'FARMER'
-            | 'LABOUR'
-            | 'TRANSPORTER'
-            | 'GUEST';
+        const ALLOWED_ROLES = new Set(['FARMER', 'LABOUR', 'TRANSPORTER', 'NURSERY', 'GUEST']);
+        const rawRole = role ? role.toUpperCase() : 'GUEST';
+        if (rawRole !== 'GUEST' && !ALLOWED_ROLES.has(rawRole)) {
+            throw new BadRequestException(`Invalid role: ${role}`);
+        }
+        const normalizedRole = rawRole as 'FARMER' | 'LABOUR' | 'TRANSPORTER' | 'NURSERY' | 'GUEST';
 
         if (!user) {
             user = await this.prisma.user.create({
@@ -196,23 +197,90 @@ export class AuthService {
         //    compares payload.jti with the stored value on every request.
         //    A Redis compromise yields only random UUIDs, not usable JWTs.
         const jti = crypto.randomUUID();
+        const instanceId = verifyOtpDto.instanceId;
         const payload = {
             sub:         user.id,
             phoneNumber: user.phoneNumber,
             role:        user.role,
             jti,
+            iid:         instanceId ?? null, // app-installation ID for device binding
         };
-        const token = this.jwtService.sign(payload);
+        const token = this.jwtService.sign(payload); // 15-minute access token
 
-        // 8. Store only the jti (36-char UUID) — never the raw JWT.
-        await this.redis.set(`session:${user.id}`, jti, 86400); // 24 h — matches JWT expiry
+        // 8. Generate opaque 32-byte refresh token; store only its SHA-256 hash (never raw).
+        const rawRefreshToken    = crypto.randomBytes(32).toString('hex');
+        const refreshTokenHash   = crypto.createHash('sha256').update(rawRefreshToken).digest('hex');
+        const refreshTokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+        await Promise.all([
+            this.redis.set(`session:${user.id}`, jti, 7 * 24 * 3600), // TTL matches refresh window
+            this.prisma.user.update({
+                where: { id: user.id },
+                data:  { refreshTokenHash, refreshTokenExpiry, instanceId: instanceId ?? undefined },
+            }),
+        ]);
+
+        // Audit: record successful login (fire-and-forget)
+        this.prisma.auditLog.create({
+            data: { userId: user.id, action: 'OTP_VERIFIED', resource: 'auth',
+                    details: { deviceOS: verifyOtpDto.deviceOS ?? null, instanceId: verifyOtpDto.instanceId ?? null } },
+        }).catch(() => {/* non-critical */});
 
         return {
-            message: 'Verification successful',
+            message:          'Verification successful',
             user,
             token,
+            refreshToken:     rawRefreshToken,
             needsProfileSetup: !(await this.isProfileComplete(user)),
         };
+    }
+
+    async refreshAccessToken(rawRefreshToken: string, instanceId?: string) {
+        const tokenHash = crypto.createHash('sha256').update(rawRefreshToken).digest('hex');
+
+        const user = await this.prisma.user.findFirst({
+            where: {
+                refreshTokenHash:   tokenHash,
+                refreshTokenExpiry: { gt: new Date() },
+            },
+            select: { id: true, phoneNumber: true, role: true, instanceId: true },
+        });
+
+        if (!user) throw new UnauthorizedException('Refresh token invalid or expired');
+
+        // Soft device-binding check — mismatch is flagged but not hard-blocked to avoid
+        // locking out users who reinstalled the app; the new instanceId is accepted.
+        if (user.instanceId && instanceId && user.instanceId !== instanceId) {
+            this.logger.warn(`[SECURITY] Refresh token used from different device — userId=${user.id}`);
+        }
+
+        // Rotate: issue new access token + new refresh token; invalidate the old one.
+        const jti                    = crypto.randomUUID();
+        const newRaw                 = crypto.randomBytes(32).toString('hex');
+        const newHash                = crypto.createHash('sha256').update(newRaw).digest('hex');
+        const newExpiry              = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        const newPayload = {
+            sub:         user.id,
+            phoneNumber: user.phoneNumber,
+            role:        user.role,
+            jti,
+            iid:         instanceId ?? user.instanceId ?? null,
+        };
+        const newAccessToken = this.jwtService.sign(newPayload);
+
+        await Promise.all([
+            this.redis.set(`session:${user.id}`, jti, 7 * 24 * 3600),
+            this.prisma.user.update({
+                where: { id: user.id },
+                data:  {
+                    refreshTokenHash:   newHash,
+                    refreshTokenExpiry: newExpiry,
+                    instanceId:         instanceId ?? user.instanceId ?? undefined,
+                },
+            }),
+        ]);
+
+        return { token: newAccessToken, refreshToken: newRaw };
     }
 
     async isProfileComplete(user: Partial<User>): Promise<boolean> {
@@ -246,6 +314,14 @@ export class AuthService {
                 this.logger.log(`isProfileComplete [TRANSPORTER] result=${isComplete}`);
                 return isComplete;
             }
+
+            if (user.role === 'NURSERY') {
+                const profile = await this.prisma.nurseryProfile.findUnique({ where: { userId: user.id } });
+                if (profile && !hasName && profile.businessName) hasName = true;
+                const isComplete = !!profile && hasName && hasLocation;
+                this.logger.log(`isProfileComplete [NURSERY] result=${isComplete}`);
+                return isComplete;
+            }
         } catch (e) {
             this.logger.error(`Error checking profile completeness for ${user.id}:`, e);
             return false;
@@ -257,7 +333,14 @@ export class AuthService {
     }
 
     async updateProfile(userId: string, data: Partial<User>) {
-        if (data.role) data.role = data.role.toUpperCase() as any;
+        if (data.role) {
+            const normalized = data.role.toUpperCase();
+            const ALLOWED    = new Set(['FARMER', 'LABOUR', 'TRANSPORTER', 'NURSERY']);
+            if (!ALLOWED.has(normalized)) {
+                throw new BadRequestException(`Invalid role: ${data.role}`);
+            }
+            data.role = normalized as any;
+        }
         return this.prisma.user.update({
             where: { id: userId },
             data: { ...data },
@@ -364,13 +447,23 @@ export class AuthService {
         // Rotate the session: invalidate the old jti and issue a fresh JWT so the user
         // stays logged in without re-authenticating, while the old token is revoked.
         const jti = crypto.randomUUID();
+        // Preserve instanceId from existing session so device binding is not lost
+        const existingSession = await this.prisma.user.findUnique({
+            where: { id: userId }, select: { instanceId: true },
+        });
         const newToken = this.jwtService.sign({
             sub:         userId,
             phoneNumber: newPhoneNumber,
             role:        updatedUser.role ?? 'FARMER',
             jti,
+            iid:         existingSession?.instanceId ?? null,
         });
-        await this.redis.set(`session:${userId}`, jti, 86400);
+        await this.redis.set(`session:${userId}`, jti, 7 * 24 * 3600); // 7 days — matches normal session TTL
+
+        // Audit: phone number changed
+        this.prisma.auditLog.create({
+            data: { userId, action: 'PHONE_UPDATED', resource: 'auth', details: {} },
+        }).catch(() => {/* non-critical */});
 
         return {
             success:  true,
@@ -381,7 +474,17 @@ export class AuthService {
     }
 
     async logout(userId: string) {
-        await this.redis.del(`session:${userId}`);
+        await Promise.all([
+            this.redis.del(`session:${userId}`),
+            this.prisma.user.update({
+                where: { id: userId },
+                data:  { refreshTokenHash: null, refreshTokenExpiry: null },
+            }),
+        ]);
+        // Audit: record logout (fire-and-forget)
+        this.prisma.auditLog.create({
+            data: { userId, action: 'LOGOUT', resource: 'auth', details: {} },
+        }).catch(() => {/* non-critical */});
         return { success: true, message: 'Logged out successfully' };
     }
 
@@ -397,6 +500,7 @@ export class AuthService {
                         transporterProfile: { include: { vehicles: true } },
                     },
                 });
+                // Note: nurseryProfile looked up separately below (avoids circular include complexity)
 
                 if (!user) {
                     throw new UnauthorizedException('User not found');
@@ -418,6 +522,19 @@ export class AuthService {
                     await tx.labourBooking.deleteMany({ where: { labourId: user.labourProfile.id } });
                     await tx.labourProfile.delete({ where: { id: user.labourProfile.id } });
                 }
+
+                // Clean up nursery data if user is a NURSERY role
+                const nurseryProfile = await tx.nurseryProfile.findUnique({
+                    where: { userId },
+                    select: { id: true },
+                });
+                if (nurseryProfile) {
+                    await tx.nurseryOrder.deleteMany({ where: { nurseryId: nurseryProfile.id } });
+                    await tx.nurseryProduct.deleteMany({ where: { nurseryId: nurseryProfile.id } });
+                    await tx.nurseryProfile.delete({ where: { id: nurseryProfile.id } });
+                }
+                // Delete nursery orders placed BY this user as a farmer
+                await tx.nurseryOrder.deleteMany({ where: { farmerId: userId } });
 
                 const userMachines = await tx.machine.findMany({ where: { ownerId: userId }, select: { id: true } });
                 const machineIds = userMachines.map((m) => m.id);

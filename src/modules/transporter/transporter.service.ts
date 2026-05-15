@@ -13,7 +13,7 @@ import { CancelRequestDto } from './dto/cancel-request.dto';
 import { ConfirmSuggestionDto } from './dto/confirm-suggestion.dto';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { haversineSql } from '../../common/utils/haversine.util';
+import { postgisDistanceKmSql, postgisWithinSql } from '../../common/utils/haversine.util';
 import { TransportRequestCreatedEvent } from '../../events/types/system.events';
 
 @Injectable()
@@ -87,60 +87,37 @@ export class TransporterService {
     const limit = filters.limit || 15;
     const offset = (page - 1) * limit;
 
-    // Fetch ALL rejected requests for this farmer so we can return per-vehicle blocked dates
-    // (no longer hiding the vehicle — only block the specific rejected date on the frontend)
-    const rejectedRequests = filters.userId
-      ? await this.prisma.transportRequest.findMany({
-          where: { farmerId: filters.userId, status: 'REJECTED' },
-          select: { transporterId: true, requiredDate: true, vehicleId: true },
-        })
+    // Fetch ALL per-farmer request dates in ONE query with CASE classification
+    // (was 3 separate queries — 3× DB round-trips eliminated)
+    type RequestRow = { vehicleId: string; requiredDate: Date; requestType: 'rejected' | 'pending' | 'active' };
+    const farmerRequests: RequestRow[] = filters.userId
+      ? await this.prisma.$queryRaw`
+          SELECT "vehicleId", "requiredDate",
+                 CASE
+                   WHEN status = 'REJECTED'                                         THEN 'rejected'
+                   WHEN status = 'SENT'                                             THEN 'pending'
+                   WHEN status IN ('ACCEPTED','SCHEDULED','AWAITING_APPROVAL')      THEN 'active'
+                 END AS "requestType"
+          FROM "TransportRequest"
+          WHERE "farmerId" = ${filters.userId}
+            AND status IN ('REJECTED','SENT','ACCEPTED','SCHEDULED','AWAITING_APPROVAL')
+        `
       : [];
 
-    const pendingRequests = filters.userId
-      ? await this.prisma.transportRequest.findMany({
-          where: { farmerId: filters.userId, status: 'SENT' },
-          select: { vehicleId: true, requiredDate: true },
-        })
-      : [];
-
-    const activeRequests = filters.userId
-      ? await this.prisma.transportRequest.findMany({
-          where: { 
-            farmerId: filters.userId, 
-            status: { in: ['ACCEPTED', 'SCHEDULED', 'AWAITING_APPROVAL'] } 
-          },
-          select: { vehicleId: true, requiredDate: true },
-        })
-      : [];
-
-    // Map: vehicleId -> array of YYYY-MM-DD strings that were rejected
     const rejectedDatesByVehicle = new Map<string, string[]>();
-    for (const r of rejectedRequests) {
-      const dateStr = r.requiredDate.toISOString().split('T')[0];
-      if (!rejectedDatesByVehicle.has(r.vehicleId)) {
-        rejectedDatesByVehicle.set(r.vehicleId, []);
-      }
-      rejectedDatesByVehicle.get(r.vehicleId)!.push(dateStr);
-    }
+    const pendingDatesByVehicle  = new Map<string, string[]>();
+    const activeDatesByVehicle   = new Map<string, string[]>();
 
-    // Map: vehicleId -> array of YYYY-MM-DD strings with a pending (SENT) request
-    const pendingDatesByVehicle = new Map<string, string[]>();
-    for (const r of pendingRequests) {
-      const dateStr = r.requiredDate.toISOString().split('T')[0];
-      if (!pendingDatesByVehicle.has(r.vehicleId)) {
-        pendingDatesByVehicle.set(r.vehicleId, []);
-      }
-      pendingDatesByVehicle.get(r.vehicleId)!.push(dateStr);
-    }
-
-    // Map: vehicleId -> array of YYYY-MM-DD strings with an active request
-    const activeDatesByVehicle = new Map<string, string[]>();
-    for (const r of activeRequests) {
-      const dateStr = r.requiredDate.toISOString().split('T')[0];
-      if (!activeDatesByVehicle.has(r.vehicleId)) {
-        activeDatesByVehicle.set(r.vehicleId, []);
-      }
-      activeDatesByVehicle.get(r.vehicleId)!.push(dateStr);
+    for (const r of farmerRequests) {
+      const dateStr = r.requiredDate instanceof Date
+        ? r.requiredDate.toISOString().split('T')[0]
+        : String(r.requiredDate).split('T')[0];
+      const map =
+        r.requestType === 'rejected' ? rejectedDatesByVehicle :
+        r.requestType === 'pending'  ? pendingDatesByVehicle  :
+                                       activeDatesByVehicle;
+      if (!map.has(r.vehicleId)) map.set(r.vehicleId, []);
+      map.get(r.vehicleId)!.push(dateStr);
     }
 
     let paramIndex = 1;
@@ -184,16 +161,14 @@ export class TransporterService {
     let distanceOrder = 'ORDER BY v."createdAt" DESC';
 
     if (filters.lat != null && filters.lng != null) {
-      const distanceCalc = haversineSql(
-        'u."locationLat"', 'u."locationLng"',
-        `$${paramIndex}`, `$${paramIndex + 1}`,
-      );
-      params.push(filters.lat, filters.lng);
-      paramIndex += 2;
+      const distCalc   = postgisDistanceKmSql('u."locationLng"', 'u."locationLat"', `$${paramIndex}`, `$${paramIndex + 1}`);
+      const withinExpr = postgisWithinSql('u."locationLng"', 'u."locationLat"', `$${paramIndex}`, `$${paramIndex + 1}`, `$${paramIndex + 2}`);
+      params.push(filters.lng, filters.lat, filters.radius ?? 50);
+      paramIndex += 3;
 
-      distanceSelect = `${distanceCalc} as "distanceKm"`;
-      conditions.push(`${distanceCalc} <= $${paramIndex++}`);
-      params.push(filters.radius ?? 50);
+      distanceSelect = `${distCalc} as "distanceKm"`;
+      conditions.push(`u."locationLat" IS NOT NULL AND u."locationLng" IS NOT NULL`);
+      conditions.push(withinExpr);
       distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 
@@ -237,13 +212,20 @@ export class TransporterService {
 
     const vehicleIds = rawVehicles.map((v) => v.id);
 
-    // Fetch upcoming blocked dates (calendar)
+    // Fetch upcoming blocked dates — limited to next 30 days to avoid fetching unbounded future dates
     const nowStart = new Date();
-    nowStart.setHours(0,0,0,0);
+    nowStart.setHours(0, 0, 0, 0);
+    const futureLimit = new Date(nowStart);
+    futureLimit.setDate(futureLimit.getDate() + 30);
+
     const blockedEntries = vehicleIds.length > 0
       ? await this.prisma.vehicleAvailability.findMany({
-          where: { vehicleId: { in: vehicleIds }, date: { gte: nowStart }, state: { not: 'AVAILABLE' } },
-          select: { vehicleId: true, date: true, state: true }
+          where: {
+            vehicleId: { in: vehicleIds },
+            date:      { gte: nowStart, lte: futureLimit },
+            state:     { not: 'AVAILABLE' },
+          },
+          select: { vehicleId: true, date: true, state: true },
         })
       : [];
       
@@ -296,18 +278,14 @@ export class TransporterService {
     let distanceOrder = 'ORDER BY p."createdAt" DESC';
 
     if (lat != null && lng != null) {
-      const distanceCalc = haversineSql(
-        'u."locationLat"', 'u."locationLng"',
-        `$${paramIndex}`, `$${paramIndex + 1}`,
-      );
-      params.push(lat, lng);
-      paramIndex += 2;
+      const distCalc   = postgisDistanceKmSql('u."locationLng"', 'u."locationLat"', `$${paramIndex}`, `$${paramIndex + 1}`);
+      const withinExpr = postgisWithinSql('u."locationLng"', 'u."locationLat"', `$${paramIndex}`, `$${paramIndex + 1}`, `$${paramIndex + 2}`);
+      params.push(lng, lat, radius);
+      paramIndex += 3;
 
-      distanceSelect = `${distanceCalc} as "distanceKm"`;
-
-      conditions.push(`${distanceCalc} <= $${paramIndex++}`);
-      params.push(radius);
-
+      distanceSelect = `${distCalc} as "distanceKm"`;
+      conditions.push(`u."locationLat" IS NOT NULL AND u."locationLng" IS NOT NULL`);
+      conditions.push(withinExpr);
       distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 

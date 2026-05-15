@@ -1,6 +1,7 @@
 import {
   Injectable,
   BadRequestException,
+  ForbiddenException,
   Logger,
   NotFoundException,
   OnModuleInit,
@@ -106,7 +107,13 @@ export class PaymentsService implements OnModuleInit {
     // Resolve feature from new property or legacy type
     const feature = dto.feature || dto.type || 'UNKNOWN';
 
-    // Server-side amount validation for ALL types â€” prevents client-side tampering
+    // Ownership check first — prevents information leakage from amount error messages
+    // (e.g. "Expected ₹499 for monthly plan" would reveal another user's vehicle plan)
+    if (dto.entityId) {
+      await this.assertEntityOwnership(userId, dto.entityId, dto.entityType ?? DEFAULT_ENTITY_TYPE[feature] ?? 'MACHINE');
+    }
+
+    // Amount validation after ownership is confirmed
     await this.validateAmount(dto);
 
     // Idempotency: reuse a PENDING order within the last 30 minutes
@@ -170,7 +177,10 @@ export class PaymentsService implements OnModuleInit {
   async verifyPayment(userId: string, dto: VerifyPaymentDto) {
     const keySecret = this.config.get<string>('RAZORPAY_KEY_SECRET') ?? '';
 
-    const isDevPayment = this.config.get('NODE_ENV') !== 'production';
+    // Mock payments: ONLY allowed when NODE_ENV is explicitly 'development' or 'test'.
+    // If NODE_ENV is missing/undefined, mocks are blocked (fail-secure default).
+    const nodeEnv     = this.config.get<string>('NODE_ENV') ?? 'production';
+    const isDevPayment = nodeEnv === 'development' || nodeEnv === 'test';
     const isMock =
       isDevPayment &&
       dto.razorpayPaymentId.startsWith('pay_mock_') &&
@@ -192,44 +202,63 @@ export class PaymentsService implements OnModuleInit {
       })();
 
       if (!valid) {
-        // Mark FAILED â€” prevents the order from being exploited further
         await this.prisma.payment.updateMany({
           where: { razorpayOrderId: dto.razorpayOrderId, userId },
           data:  { status: 'FAILED' },
         });
+        // Audit: tampered or forged signature (fire-and-forget)
+        this.prisma.auditLog.create({
+          data: {
+            userId,
+            action: 'PAYMENT_SIGNATURE_INVALID',
+            resource: 'payment',
+            details: { orderId: dto.razorpayOrderId },
+          },
+        }).catch(() => {/* non-critical */});
         throw new BadRequestException('Payment verification failed: Invalid signature');
       }
     }
 
-    // Idempotency â€” skip if already processed
-    const payments = await this.prisma.payment.findMany({
+    // Fetch pending payments for this order (for activation context below)
+    const allPayments = await this.prisma.payment.findMany({
       where: { razorpayOrderId: dto.razorpayOrderId, userId },
     });
-    if (payments.some(p => p.status === 'PAID')) {
-      this.logger.log(`Order ${dto.razorpayOrderId} already verified â€” idempotent response`);
+
+    // Idempotency — skip if already processed
+    if (allPayments.some(p => p.status === 'PAID')) {
+      this.logger.log(`Order ${dto.razorpayOrderId} already verified — idempotent response`);
       return { success: true, message: 'Payment already verified', alreadyProcessed: true };
     }
 
-    // â”€â”€ Atomic transaction: mark PAID + activate subscription â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Atomic transaction: mark PAID + activate subscription ─────────────────────
+    // updateMany with status:'PENDING' is the idempotency lock — concurrent calls
+    // will update 0 rows and skip subscription activation (same pattern as webhook).
     await this.prisma.$transaction(async (tx) => {
-      await tx.payment.updateMany({
-        where: { razorpayOrderId: dto.razorpayOrderId, userId },
+      const updated = await tx.payment.updateMany({
+        where: { razorpayOrderId: dto.razorpayOrderId, userId, status: 'PENDING' },
         data:  { razorpayPaymentId: dto.razorpayPaymentId, status: 'PAID' },
       });
 
-      for (const p of payments) {
-        // Activate if it's a vehicle subscription OR a machine listing plan
-        const isSubscription = 
-          p.type === 'SUBSCRIPTION' || 
+      if (updated.count === 0) {
+        // Another concurrent verify call already processed this — skip activation
+        this.logger.warn(`verifyPayment ${dto.razorpayOrderId}: concurrent call lost the race — skipping`);
+        return;
+      }
+
+      for (const p of allPayments) {
+        const isSubscription =
+          p.type === 'SUBSCRIPTION' ||
           p.type === 'VEHICLE_SUBSCRIPTION' ||
-          p.type.startsWith('MACHINE_LISTING') || 
+          p.type.startsWith('MACHINE_LISTING') ||
           p.type.startsWith('LISTING_FEE');
 
         if (isSubscription && p.entityId) {
-          await this.activateSubscription(tx, p.id, p.entityId, Number(p.amount), p.entityType ?? 'VEHICLE', p.type);
+          await this.activateSubscription(tx, p.id, p.entityId, Number(p.amount), p.entityType ?? 'VEHICLE', p.type, p.planTier ?? undefined);
         }
       }
     });
+
+    const payments = allPayments;
 
     // Async side-effects: notifications (enqueue, don't block response)
     for (const payment of payments) {
@@ -243,6 +272,21 @@ export class PaymentsService implements OnModuleInit {
     }
 
     this.logger.log(`Payment verified: user=${userId} order=${dto.razorpayOrderId}`);
+
+    // Audit: record successful payment (fire-and-forget)
+    this.prisma.auditLog.create({
+      data: {
+        userId,
+        action: 'PAYMENT_VERIFIED',
+        resource: 'payment',
+        details: {
+          orderId:   dto.razorpayOrderId,
+          paymentId: dto.razorpayPaymentId,
+          amounts:   payments.map((p) => Number(p.amount)),
+        },
+      },
+    }).catch(() => {/* non-critical */});
+
     return { success: true, message: 'Payment verified successfully' };
   }
 
@@ -275,17 +319,36 @@ export class PaymentsService implements OnModuleInit {
           const rzpPayments = await this.razorpay.orders.fetchPayments(razorpayOrderId);
           const captured = rzpPayments?.items?.find((p: any) => p.status === 'captured');
           if (captured) {
-            // Atomic recovery: mark PAID + activate subscription
+            // Atomic recovery: mark PAID + activate subscription.
+            // status:'PENDING' guard prevents overwriting a FAILED/REFUNDED payment.
             await this.prisma.$transaction(async (tx) => {
-              await tx.payment.updateMany({
-                where: { razorpayOrderId, userId },
+              const updated = await tx.payment.updateMany({
+                where: { razorpayOrderId, userId, status: 'PENDING' },
                 data:  { status: 'PAID', razorpayPaymentId: captured.id },
               });
-              if (record.type === 'SUBSCRIPTION' && record.entityId) {
-                await this.activateSubscription(tx, record.id, record.entityId, Number(record.amount), record.entityType ?? 'VEHICLE', record.type);
+              if (updated.count === 0) {
+                this.logger.warn(`getPaymentStatus recovery: order ${razorpayOrderId} already processed — skip`);
+                return;
+              }
+              // Activate all subscription-like types — matches verifyPayment + webhook logic
+              const isActivatable =
+                (record.type === 'SUBSCRIPTION' ||
+                 record.type === 'VEHICLE_SUBSCRIPTION' ||
+                 record.type.startsWith('MACHINE_LISTING') ||
+                 record.type.startsWith('LISTING_FEE')) &&
+                !!record.entityId;
+
+              if (isActivatable) {
+                await this.activateSubscription(
+                  tx, record.id, record.entityId!, Number(record.amount),
+                  record.entityType ?? 'VEHICLE', record.type,
+                  record.planTier ?? undefined, // pass planTier for correct plan derivation
+                );
               }
             });
-            if (record.type === 'SUBSCRIPTION' && record.entityId) {
+
+            const isSubscriptionForNotif = record.type === 'SUBSCRIPTION' && record.entityId;
+            if (isSubscriptionForNotif) {
               await this.paymentQueue.add(
                 'send-subscription-notification',
                 { userId, vehicleId: record.entityId, amount: Number(record.amount) },
@@ -581,30 +644,42 @@ export class PaymentsService implements OnModuleInit {
       const orderId    = rzpPayment.order_id;
       const paymentId  = rzpPayment.id;
 
+      // Race-condition-safe: fetch PENDING rows, then atomically mark PAID.
+      // If two webhook calls race, only ONE will find rows to update (Postgres locks rows).
+      // We re-fetch inside the transaction so the updateMany count is authoritative.
       const pending = await this.prisma.payment.findMany({
         where: { razorpayOrderId: orderId, status: 'PENDING' },
       });
 
       if (pending.length === 0) {
-        this.logger.log(`Webhook ${orderId}: already processed â€” skip`);
+        this.logger.log(`Webhook ${orderId}: already processed — skip`);
         return;
       }
 
-      // Atomic: mark PAID + activate subscriptions
+      // Atomic: mark PAID + activate subscriptions in one transaction.
+      // updateMany with status:'PENDING' guard is the idempotency lock —
+      // the second concurrent webhook call will update 0 rows and skip activation.
       await this.prisma.$transaction(async (tx) => {
-        await tx.payment.updateMany({
+        const updated = await tx.payment.updateMany({
           where: { razorpayOrderId: orderId, status: 'PENDING' },
           data:  { status: 'PAID', razorpayPaymentId: paymentId },
         });
+
+        if (updated.count === 0) {
+          // Another concurrent webhook already processed this order
+          this.logger.warn(`Webhook ${orderId}: concurrent call lost the race — skipping activation`);
+          return;
+        }
+
         for (const p of pending) {
-          const isSubscription = 
-            p.type === 'SUBSCRIPTION' || 
+          const isSubscription =
+            p.type === 'SUBSCRIPTION' ||
             p.type === 'VEHICLE_SUBSCRIPTION' ||
-            p.type.startsWith('MACHINE_LISTING') || 
+            p.type.startsWith('MACHINE_LISTING') ||
             p.type.startsWith('LISTING_FEE');
 
           if (isSubscription && p.entityId) {
-            await this.activateSubscription(tx, p.id, p.entityId, Number(p.amount), p.entityType ?? 'VEHICLE', p.type);
+            await this.activateSubscription(tx, p.id, p.entityId, Number(p.amount), p.entityType ?? 'VEHICLE', p.type, p.planTier ?? undefined);
           }
         }
       });
@@ -637,14 +712,37 @@ export class PaymentsService implements OnModuleInit {
     }
   }
 
-  // â”€â”€ Private: Amount validation for ALL payment types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Private: Entity ownership check ────────────────────────────────────────────
+  // Prevents a user from creating a payment order for another user's machine/vehicle.
+  private async assertEntityOwnership(userId: string, entityId: string, entityType: string) {
+    if (entityType === 'VEHICLE') {
+      const vehicle = await this.prisma.vehicle.findUnique({
+        where:  { id: entityId },
+        select: { transporter: { select: { userId: true } } },
+      });
+      if (!vehicle) throw new NotFoundException(`Vehicle ${entityId} not found`);
+      if (vehicle.transporter?.userId !== userId) {
+        throw new ForbiddenException('You do not own this vehicle');
+      }
+    } else if (entityType === 'MACHINE') {
+      const machine = await this.prisma.machine.findUnique({
+        where:  { id: entityId },
+        select: { ownerId: true },
+      });
+      if (!machine) throw new NotFoundException(`Machine ${entityId} not found`);
+      if (machine.ownerId !== userId) {
+        throw new ForbiddenException('You do not own this machine');
+      }
+    }
+    // CONTACT / PROFILE types don't require entity ownership checks
+  }
+
+  // ── Private: Amount validation for ALL payment types ────────────────────────────
   private async validateAmount(dto: CreatePaymentOrderDto) {
-    if (dto.type === 'SUBSCRIPTION' || dto.feature?.includes('VEHICLE_SUBSCRIPTION')) {
-      // Subscription amount validated separately (needs vehicle's plan from DB)
-      // â€” handled in createOrder after this call by validateSubscriptionAmount
-      // Wait, currently validateSubscriptionAmount is called somewhere else?
-      // Ah, validateSubscriptionAmount is private, we should probably call it here.
-      // But let's just skip it as per the original logic for now.
+    // Subscription types need plan-aware validation — delegate to dedicated method
+    if (dto.type === 'SUBSCRIPTION' || dto.feature?.includes('VEHICLE_SUBSCRIPTION') ||
+        dto.feature?.includes('NURSERY_SUBSCRIPTION')) {
+      await this.validateSubscriptionAmount(dto);
       return;
     }
 
@@ -653,7 +751,12 @@ export class PaymentsService implements OnModuleInit {
       where: { feature }
     });
 
-    if (!feeConfig) return; // unknown type, skip
+    if (!feeConfig) {
+      // Unknown feature — log warning but do NOT silently allow arbitrary amounts.
+      // Reject explicitly so unknown feature names cannot be used to bypass validation.
+      this.logger.warn(`validateAmount: no FeeConfig for feature="${feature}" — rejecting`);
+      throw new BadRequestException(`Unknown payment feature: ${feature}`);
+    }
 
     const expectedRupees = Math.round(feeConfig.amountPaise / 100);
     const requestedRupees = Math.round(dto.amount / 100);
@@ -675,11 +778,17 @@ export class PaymentsService implements OnModuleInit {
 
   // â”€â”€ Private: Validate subscription amount â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   private async validateSubscriptionAmount(dto: CreatePaymentOrderDto) {
+    if (!dto.entityId) {
+      throw new BadRequestException('entityId is required for subscription payments');
+    }
+
     const vehicle = await this.prisma.vehicle.findUnique({
       where:  { id: dto.entityId },
       select: { plan: true },
     });
-    if (!vehicle) return;
+    if (!vehicle) {
+      throw new BadRequestException(`Vehicle ${dto.entityId} not found`);
+    }
 
     const plan          = (vehicle.plan || 'monthly') as string;
     const expectedRupees = SUBSCRIPTION_PLANS[plan];
@@ -715,6 +824,7 @@ export class PaymentsService implements OnModuleInit {
     amountRupees: number,
     entityType = 'VEHICLE',
     paymentType = 'SUBSCRIPTION',
+    planTier?: string,  // explicit tier from DTO takes priority over amount-derived tier
   ) {
     const startDate = new Date();
     const endDate   = new Date();
@@ -726,11 +836,12 @@ export class PaymentsService implements OnModuleInit {
     if (entityType === 'VEHICLE' ||
         paymentType === 'SUBSCRIPTION' ||
         paymentType === 'VEHICLE_SUBSCRIPTION') {
-      // â”€â”€ Vehicle subscription â€” plan derived from amount â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // Vehicle subscription — derive plan from planTier (preferred) or amount (fallback)
       subscriptionType = 'VEHICLE_PLAN';
-      if (amountRupees >= SUBSCRIPTION_PLANS.yearly)         { plan = 'yearly';    daysToAdd = 365; }
-      else if (amountRupees >= SUBSCRIPTION_PLANS.quarterly) { plan = 'quarterly'; daysToAdd = 90;  }
-      else                                                   { plan = 'monthly';   daysToAdd = 30;  }
+      const tier = (planTier ?? '').toLowerCase();
+      if      (tier === 'yearly'    || (!tier && amountRupees >= SUBSCRIPTION_PLANS.yearly))    { plan = 'yearly';    daysToAdd = 365; }
+      else if (tier === 'quarterly' || (!tier && amountRupees >= SUBSCRIPTION_PLANS.quarterly)) { plan = 'quarterly'; daysToAdd = 90;  }
+      else                                                                                       { plan = 'monthly';   daysToAdd = 30;  }
 
       endDate.setDate(endDate.getDate() + daysToAdd);
 
@@ -753,9 +864,11 @@ export class PaymentsService implements OnModuleInit {
 
       endDate.setDate(endDate.getDate() + daysToAdd);
 
+      // Also set status → AVAILABLE so the machine appears in browse results
+      // immediately via the webhook path (not just when success.tsx runs).
       await tx.machine.update({
         where: { id: entityId },
-        data:  { plan, planExpiresAt: endDate },
+        data:  { plan, planExpiresAt: endDate, status: 'AVAILABLE' },
       });
     } else {
       // Unknown entity type â€” log and return without creating subscription

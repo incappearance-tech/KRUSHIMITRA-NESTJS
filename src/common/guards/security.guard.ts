@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { RedisService } from '../../database/redis/redis.service';
 import { HmacUtil } from '../utils/hmac.util';
 import { CryptoUtil } from '../utils/crypto.util';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class SecurityGuard implements CanActivate {
@@ -96,37 +97,27 @@ export class SecurityGuard implements CanActivate {
         let isValid = false;
 
         for (const p of pathsToTry) {
-            const payload = HmacUtil.createSignaturePayload(
-                req.method,
-                p,
-                timestamp,
-                nonce,
-                bodyString,
-            );
+            const payload     = HmacUtil.createSignaturePayload(req.method, p, timestamp, nonce, bodyString);
             const expectedSig = HmacUtil.generateSignature(payload, secret);
-            if (expectedSig === signature) {
-                isValid = true;
-                break;
-            }
+
+            // Timing-safe comparison — prevents timing side-channel attacks.
+            // HMAC-SHA256 base64 is always 44 chars; buffers must be equal length.
+            try {
+                const eBuf = Buffer.from(expectedSig,  'base64');
+                const sBuf = Buffer.from(signature ?? '', 'base64');
+                if (eBuf.length === sBuf.length && crypto.timingSafeEqual(eBuf, sBuf)) {
+                    isValid = true;
+                    break;
+                }
+            } catch { /* malformed base64 — treat as invalid */ }
         }
 
         if (!isValid) {
-            const expectedSig = HmacUtil.generateSignature(
-                HmacUtil.createSignaturePayload(req.method, normalizedPath, timestamp, nonce, bodyString),
-                secret
+            // Log only non-sensitive context — NEVER log expectedSig (information disclosure)
+            this.logger.warn(
+                `Signature mismatch: method=${req.method} path=${normalizedPath} ` +
+                `ip=${req.ip} bodyLen=${bodyString.length}`,
             );
-            const debugInfo = {
-                url,
-                normalizedPath,
-                method: req.method,
-                timestamp,
-                nonce,
-                bodyLen: bodyString.length,
-                receivedSig: signature,
-                expectedSig,
-                bodyString: bodyString.substring(0, 100) + (bodyString.length > 100 ? '...' : ''),
-            };
-            this.logger.error(`Invalid signature for ${url}. Debug: ${JSON.stringify(debugInfo)}`);
             throw new UnauthorizedException('Invalid request signature');
         }
     }

@@ -20,11 +20,15 @@ import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
+  const isProduction = process.env.NODE_ENV === 'production';
+
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
     integrations: [nodeProfilingIntegration()],
-    tracesSampleRate: 1.0,
-    profilesSampleRate: 1.0,
+    // 100% in dev to catch everything; 10% in production to reduce cost + noise
+    tracesSampleRate:   isProduction ? 0.1 : 1.0,
+    profilesSampleRate: isProduction ? 0.1 : 1.0,
+    environment: process.env.NODE_ENV ?? 'development',
   });
 
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -36,6 +40,7 @@ async function bootstrap() {
   app.useLogger(app.get(Logger));
 
   const configService = app.get(ConfigService);
+
 
   // rawBody is needed ONLY for the Razorpay webhook — HMAC verification requires the
   // raw unparsed body string. Setting global:false + routes whitelist ensures rawBody
@@ -88,22 +93,27 @@ async function bootstrap() {
     }),
   );
 
-  // 5. Swagger API Documentation
-  const config = new DocumentBuilder()
-    .setTitle('KrushiMitra API')
-    .setDescription('The KrushiMitra Mobile API description')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .addServer('http://localhost:3000', 'Local Environment')
-    .addServer('https://krushimitra-api.onrender.com', 'Production Environment')
-    .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api-docs', app, document);
+  // 5. Swagger — only in non-production (exposes full API schema to attackers)
+  if (!isProduction) {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('KrushiMitra API')
+      .setDescription('The KrushiMitra Mobile API description')
+      .setVersion('1.0')
+      .addBearerAuth()
+      .addServer('http://localhost:3000', 'Local Environment')
+      .build();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api-docs', app, document);
+  }
 
-  // Enable CORS for mobile app access
+  // 6. CORS — restrict to known origins in production
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').filter(Boolean);
   app.enableCors({
-    origin: '*', // Allow all origins for mobile app development
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    origin: isProduction
+      ? (allowedOrigins.length ? allowedOrigins : false) // false = block all browser origins in prod (mobile only)
+      : '*',                                              // dev: allow all
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders: 'Content-Type,Authorization,x-timestamp,x-nonce,x-signature,x-encrypted,x-encryption-type,x-instance-id',
     preflightContinue: false,
     optionsSuccessStatus: 204,
   });

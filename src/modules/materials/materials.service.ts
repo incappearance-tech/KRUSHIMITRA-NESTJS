@@ -1,11 +1,16 @@
 import { Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateFarmerMaterialDto, BrowseMaterialsDto } from './dto/material.dto';
+import { postgisDistanceKmSql, postgisWithinSql } from '../../common/utils/haversine.util';
+import { RedisService } from '../../database/redis/redis.service';
 
 @Injectable()
 export class MaterialsService {
   private readonly logger = new Logger(MaterialsService.name);
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redis: RedisService,
+  ) {}
 
   async createMaterial(farmerId: string, data: CreateFarmerMaterialDto) {
     return this.prisma.farmerMaterial.create({
@@ -13,7 +18,7 @@ export class MaterialsService {
         farmerId,
         materialName: data.materialName,
         photoUrl: data.photoUrl,
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
   }
@@ -24,79 +29,130 @@ export class MaterialsService {
     const offset = (page - 1) * limit;
     const search = query.searchQuery?.trim();
 
-    // Build shared WHERE — active listings + optional name search
+    // 30s Redis cache — absorbs repeat taps without extra DB load
+    const cacheKey = `materials:browse:${JSON.stringify({ ...query, page, limit })}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached as string);
+
+    let result: any;
+
+    // Use PostGIS raw query when coords provided (distance sort + radius filter)
+    // Fall back to Prisma findMany when no location given
+    if (query.lat != null && query.lng != null) {
+      result = await this.browseMaterialsWithPostgis(query.lat, query.lng, page, limit, offset, search, query.radius ?? 50);
+    } else {
+
     const where: any = {
       expiresAt: { gt: new Date() },
-      ...(search && {
-        materialName: { contains: search, mode: 'insensitive' },
-      }),
+      ...(search && { materialName: { contains: search, mode: 'insensitive' } }),
     };
 
-    // Fetch materials with farmer details
-    const materials = await this.prisma.farmerMaterial.findMany({
-      where,
-      include: {
-        farmer: {
-          select: {
-            id: true,
-            name: true,
-            phoneNumber: true,
-            locationLat: true,
-            locationLng: true,
+    const [materials, total] = await Promise.all([
+      this.prisma.farmerMaterial.findMany({
+        where,
+        include: {
+          farmer: {
+            select: {
+              id: true, name: true,
+              phoneNumber: true, // materials is public classifieds — seller chose to list
+            },
           },
         },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], // stable: id breaks ties when createdAt is equal
-      skip: offset,
-      take: limit,
-    });
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip: offset,
+        take: limit,
+      }),
+      this.prisma.farmerMaterial.count({ where }),
+    ]);
 
-    const total = await this.prisma.farmerMaterial.count({ where });
-
-    // Map and calculate distance if coordinates are provided
-    const mapped = materials.map((m) => {
-      let distanceKm = null;
-      if (query.lat && query.lng && m.farmer.locationLat && m.farmer.locationLng) {
-        distanceKm = this.calculateDistance(
-          query.lat,
-          query.lng,
-          m.farmer.locationLat,
-          m.farmer.locationLng,
-        );
-      }
-
-      return {
-        id: m.id,
-        materialName: m.materialName,
-        photoUrl: m.photoUrl,
-        createdAt: m.createdAt,
-        farmer: {
-          id: m.farmer.id,
-          name: m.farmer.name,
-          phoneNumber: m.farmer.phoneNumber,
-        },
-        distanceKm,
+      result = {
+        data: materials.map((m) => ({
+          id: m.id,
+          materialName: m.materialName,
+          photoUrl: m.photoUrl,
+          createdAt: m.createdAt,
+          farmer: { id: m.farmer.id, name: m.farmer.name },
+          distanceKm: null,
+        })),
+        meta: { total, page, limit, hasMore: offset + materials.length < total },
       };
-    });
-
-    // Sort by distance if location provided
-    if (query.lat && query.lng) {
-      mapped.sort((a, b) => {
-        if (a.distanceKm === null && b.distanceKm === null) return 0;
-        if (a.distanceKm === null) return 1;
-        if (b.distanceKm === null) return -1;
-        return a.distanceKm - b.distanceKm;
-      });
     }
 
+    this.redis.set(cacheKey, JSON.stringify(result), 30).catch(() => { /* non-critical */ });
+    return result;
+  }
+
+  // PostGIS-powered browse — sorts by real geodesic distance, filters by radius
+  private async browseMaterialsWithPostgis(
+    lat: number, lng: number,
+    page: number, limit: number, offset: number,
+    search?: string,
+    radius = 50,   // km — was accidentally referencing out-of-scope `query.radius`
+  ) {
+    let paramIndex = 1;
+    const params: any[] = [];
+    const conditions: string[] = [`fm."expiresAt" > NOW()`];
+
+    if (search) {
+      conditions.push(`fm."materialName" ILIKE $${paramIndex++}`);
+      params.push(`%${search}%`);
+    }
+
+    // Only rows where the farmer has a location set
+    conditions.push(`u."locationLat" IS NOT NULL AND u."locationLng" IS NOT NULL`);
+
+    const distCalc   = postgisDistanceKmSql('u."locationLng"', 'u."locationLat"', `$${paramIndex}`, `$${paramIndex + 1}`);
+    const withinExpr = postgisWithinSql('u."locationLng"', 'u."locationLat"', `$${paramIndex}`, `$${paramIndex + 1}`, `$${paramIndex + 2}`);
+    params.push(lng, lat, radius); // passed from caller; default 50 km
+    paramIndex += 3;
+
+    conditions.push(withinExpr);
+    const whereClause = 'WHERE ' + conditions.join(' AND ');
+
+    const countParams = [...params];
+    const dataSql = `
+      SELECT fm.id, fm."materialName", fm."photoUrl", fm."createdAt",
+             u.id as "farmerId", u.name as "farmerName",
+             u."phoneNumber" as "farmerPhone",
+             ROUND(u."locationLat"::numeric, 2) as "farmerLat",
+             ROUND(u."locationLng"::numeric, 2) as "farmerLng",
+             ${distCalc} as "distanceKm"
+      FROM "FarmerMaterial" fm
+      JOIN "User" u ON u.id = fm."farmerId"
+      ${whereClause}
+      ORDER BY "distanceKm" ASC NULLS LAST
+      LIMIT $${paramIndex++} OFFSET $${paramIndex++}
+    `;
+    params.push(limit, offset);
+
+    const countSql = `
+      SELECT COUNT(*) as total
+      FROM "FarmerMaterial" fm
+      JOIN "User" u ON u.id = fm."farmerId"
+      ${whereClause}
+    `;
+
+    const [rows, countRows] = await Promise.all([
+      this.prisma.$queryRawUnsafe<any[]>(dataSql, ...params),
+      this.prisma.$queryRawUnsafe<{ total: string }[]>(countSql, ...countParams),
+    ]);
+
+    const total = Number(countRows[0]?.total ?? 0);
+
     return {
-      data: mapped,
-      meta: {
-        total,
-        page,
-        limit,
-        hasMore: offset + mapped.length < total,
-      },
+      data: rows.map((r) => ({
+        id: r.id,
+        materialName: r.materialName,
+        photoUrl: r.photoUrl,
+        createdAt: r.createdAt,
+        // Materials is a public classifieds marketplace — sellers choose to list publicly
+        farmer: { id: r.farmerId, name: r.farmerName, phoneNumber: r.farmerPhone },
+        // Approximate coords (2dp ≈ 1.1km precision) for navigation
+        farmerLat: r.farmerLat != null ? Number(r.farmerLat) : null,
+        farmerLng: r.farmerLng != null ? Number(r.farmerLng) : null,
+        distanceKm: r.distanceKm != null ? Math.round(Number(r.distanceKm) * 10) / 10 : null,
+      })),
+      meta: { total, page, limit, hasMore: offset + rows.length < total },
     };
   }
 
@@ -114,9 +170,7 @@ export class MaterialsService {
 
     return this.prisma.farmerMaterial.update({
       where: { id },
-      data: {
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      },
+      data: { expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
     });
   }
 
@@ -125,25 +179,6 @@ export class MaterialsService {
     if (!material) throw new NotFoundException('Material not found');
     if (material.farmerId !== farmerId) throw new UnauthorizedException('Not authorized');
 
-    return this.prisma.farmerMaterial.delete({
-      where: { id },
-    });
-  }
-
-  // Haversine formula
-  private calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const R = 6371; // Earth's radius in km
-    const dLat = this.deg2rad(lat2 - lat1);
-    const dLon = this.deg2rad(lon2 - lon1);
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(this.deg2rad(lat1)) * Math.cos(this.deg2rad(lat2)) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }
-
-  private deg2rad(deg: number): number {
-    return deg * (Math.PI / 180);
+    return this.prisma.farmerMaterial.delete({ where: { id } });
   }
 }

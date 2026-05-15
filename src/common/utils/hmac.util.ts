@@ -27,11 +27,16 @@ export class HmacUtil {
   ): boolean {
     const expectedSignature = this.generateSignature(data, secret);
 
-    // Use timing-safe comparison to prevent timing attacks
-    return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature),
-    );
+    // timingSafeEqual requires equal-length buffers; wrap in try/catch so a
+    // malformed or wrong-length signature returns false instead of throwing a 500.
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(expectedSignature, 'base64'),
+        Buffer.from(signature,         'base64'),
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**

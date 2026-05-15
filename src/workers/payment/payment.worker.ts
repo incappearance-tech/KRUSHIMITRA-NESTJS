@@ -45,8 +45,9 @@ export class PaymentWorker extends WorkerHost {
     amount:    number;
   }) {
     const planName =
-      data.amount >= 3999 ? 'Yearly' :
-      data.amount >= 1199 ? '3 Months' : 'Monthly';
+      data.amount === 0   ? 'Free Trial' :
+      data.amount >= 3999 ? 'Yearly'     :
+      data.amount >= 1199 ? '3 Months'   : 'Monthly';
 
     try {
       await this.prisma.notification.create({

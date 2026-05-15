@@ -9,6 +9,7 @@ import {
   Get,
   UseInterceptors,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import {
   RequestOtpDto,
@@ -16,6 +17,7 @@ import {
   UpdateProfileDto,
   UpdateLocationDto,
   UpdatePhoneDto,
+  RefreshTokenDto,
 } from './dto/auth.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetUser } from '../../common/decorators/get-user.decorator';
@@ -33,6 +35,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) { }
 
   @Post('otp/request')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } }) // 5 OTP requests per minute per IP
   @ApiOperation({ summary: 'Request OTP for login/signup' })
   @ApiResponse({ status: 200, description: 'OTP sent successfully' })
   @HttpCode(HttpStatus.OK)
@@ -41,11 +44,21 @@ export class AuthController {
   }
 
   @Post('otp/verify')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } }) // 10 verify attempts per minute per IP
   @ApiOperation({ summary: 'Verify OTP and return JWT token' })
   @ApiResponse({ status: 200, description: 'Login successful' })
   @HttpCode(HttpStatus.OK)
   async verifyOtp(@Body() verifyOtpDto: VerifyOtpDto) {
     return this.authService.verifyOtp(verifyOtpDto);
+  }
+
+  @Post('refresh')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } }) // max 10 refresh attempts per minute per IP
+  @ApiOperation({ summary: 'Rotate refresh token and get new access token' })
+  @ApiResponse({ status: 200, description: 'New access token issued' })
+  @HttpCode(HttpStatus.OK)
+  async refresh(@Body() dto: RefreshTokenDto) {
+    return this.authService.refreshAccessToken(dto.refreshToken, dto.instanceId);
   }
 
   @UseGuards(JwtAuthGuard)

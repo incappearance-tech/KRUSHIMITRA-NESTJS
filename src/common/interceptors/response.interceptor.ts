@@ -13,12 +13,17 @@ export interface StandardResponse<T> {
   success:    boolean;
   statusCode: number;
   message:    string;
-  data:       T | string;
+  data:       T;
   path:       string;
   timestamp:  string;
-  encrypted:  boolean;
   version:    string;
   error:      any;
+}
+
+// Wire format when encryption is enabled — full envelope is inside payload
+export interface EncryptedEnvelope {
+  encrypted: true;
+  payload:   string; // base64(AES-GCM( JSON<StandardResponse> ))
 }
 
 @Injectable()
@@ -43,8 +48,17 @@ export class ResponseInterceptor<T> implements NestInterceptor<T, StandardRespon
 
     return next.handle().pipe(
       map((data) => {
-        let responseData = data;
-        let encrypted    = false;
+        // Build the full response envelope first
+        const envelope: StandardResponse<typeof data> = {
+          success:    true,
+          statusCode: response.statusCode || response.code || 200,
+          message:    'Request successful',
+          data:       data ?? {},
+          path:       request.url,
+          timestamp:  new Date().toISOString(),
+          version:    '1.0',
+          error:      null,
+        };
 
         if (isEncryptionEnabled && data !== null && data !== undefined) {
           try {
@@ -52,32 +66,22 @@ export class ResponseInterceptor<T> implements NestInterceptor<T, StandardRespon
 
             if (aesKey) {
               if (process.env.NODE_ENV !== 'production') {
-                console.log(`[DEV] 🔐 Encrypting RSA+AES response [${request.url}]:`, JSON.stringify(data).substring(0, 300));
+                console.log(`[DEV] 🔐 Encrypting full RSA+AES response [${request.url}]`);
               }
-              responseData = CryptoUtil.encryptWithAesKey(data, aesKey);
+              // Encrypt the ENTIRE envelope — nothing leaks in plaintext
+              return { encrypted: true, payload: CryptoUtil.encryptWithAesKey(envelope, aesKey) } as any;
             } else {
               if (process.env.NODE_ENV !== 'production') {
-                console.log(`[DEV] 🔐 Encrypting AES response [${request.url}]:`, JSON.stringify(data).substring(0, 300));
+                console.log(`[DEV] 🔐 Encrypting full AES response [${request.url}]`);
               }
-              responseData = CryptoUtil.encryptPayload(data);
+              return { encrypted: true, payload: CryptoUtil.encryptPayload(envelope) } as any;
             }
-            encrypted = true;
           } catch {
-            // Encryption failure → send plaintext
+            // Encryption failure → fall through to plaintext
           }
         }
 
-        return {
-          success:    true,
-          statusCode: response.statusCode || response.code || 200,
-          message:    'Request successful',
-          data:       responseData ?? {},
-          path:       request.url,
-          timestamp:  new Date().toISOString(),
-          encrypted,
-          version:    '1.0',
-          error:      null,
-        };
+        return { ...envelope, encrypted: false };
       }),
     );
   }

@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateMachineDto, MachineFilterDto } from './dto/machine.dto';
 import { CreateRentalRequestDto, RejectRentalRequestDto } from './dto/rental-request.dto';
+import { postgisDistanceKmSql, postgisWithinSql } from '../../common/utils/haversine.util';
 
 @Injectable()
 export class MachinesService {
@@ -170,23 +171,18 @@ export class MachinesService {
     let distanceOrder = 'ORDER BY m."createdAt" DESC';
 
     if (lat != null && lng != null) {
-      // Haversine formula — no PostGIS extension required
-      const EARTH_RADIUS_KM = 6371;
-      const distanceCalc = `(
-        ${EARTH_RADIUS_KM} * 2 * asin(sqrt(
-          pow(sin(radians(COALESCE(m.lat, u."locationLat") - $${paramIndex}) / 2), 2) +
-          cos(radians($${paramIndex})) * cos(radians(COALESCE(m.lat, u."locationLat"))) *
-          pow(sin(radians(COALESCE(m.lng, u."locationLng") - $${paramIndex + 1}) / 2), 2)
-        ))
-      )`;
-      params.push(lat, lng);
-      paramIndex += 2;
+      // PostGIS: use machine's own lat/lng if set, else fall back to owner location
+      const lngExpr = 'COALESCE(m.lng, u."locationLng")';
+      const latExpr = 'COALESCE(m.lat, u."locationLat")';
 
-      distanceSelect = `${distanceCalc} as "distanceKm"`;
+      const distCalc  = postgisDistanceKmSql(lngExpr, latExpr, `$${paramIndex}`, `$${paramIndex + 1}`);
+      const withinExpr = postgisWithinSql(lngExpr, latExpr, `$${paramIndex}`, `$${paramIndex + 1}`, `$${paramIndex + 2}`);
 
-      conditions.push(`(${distanceCalc} <= $${paramIndex++} OR ${distanceCalc} IS NULL)`);
-      params.push(radiusKm);
+      params.push(lng, lat, radiusKm);
+      paramIndex += 3;
 
+      distanceSelect = `${distCalc} as "distanceKm"`;
+      conditions.push(`(${withinExpr} OR (${lngExpr}) IS NULL)`);
       distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 

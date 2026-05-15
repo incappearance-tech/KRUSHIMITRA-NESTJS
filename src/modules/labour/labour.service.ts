@@ -10,13 +10,15 @@ import {
 } from './dto/labour-profile.dto';
 import { CreateLabourBookingDto } from './dto/labour-booking.dto';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { haversineKm, haversineSql } from '../../common/utils/haversine.util';
+import { haversineKm, postgisDistanceKmSql, postgisWithinSql } from '../../common/utils/haversine.util';
+import { RedisService } from '../../database/redis/redis.service';
 
 @Injectable()
 export class LabourService {
   constructor(
     private prisma: PrismaService,
-    private notifications: NotificationsService
+    private notifications: NotificationsService,
+    private redis: RedisService,
   ) { }
 
   private readonly LABOUR_TYPES = [
@@ -408,9 +410,14 @@ export class LabourService {
     const limit = filters.limit || 15;
     const offset = (page - 1) * limit;
 
+    // Cache key: stable hash of all filter params (30s TTL — fresh enough for browse)
+    const cacheKey = `labour:browse:${JSON.stringify({ ...filters, page, limit })}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached as string);
+
     let paramIndex = 1;
     const params: any[] = [];
-    const conditions: string[] = ['u."isVerified" = true']; // Added isVerified check for safety
+    const conditions: string[] = ['u."isVerified" = true'];
 
     const hasCoords = filters.lat != null && filters.lng != null;
 
@@ -448,26 +455,34 @@ export class LabourService {
     let distanceOrder = 'ORDER BY p."createdAt" DESC';
 
     if (filters.lat != null && filters.lng != null) {
-      const distanceCalc = haversineSql(
-        'u."locationLat"', 'u."locationLng"',
+      // PostGIS: ST_Distance(geography) in km; ST_DWithin for radius filter
+      const distCalc = postgisDistanceKmSql(
+        'u."locationLng"', 'u."locationLat"',
         `$${paramIndex}`, `$${paramIndex + 1}`,
       );
-      params.push(filters.lat, filters.lng);
-      paramIndex += 2;
+      const withinExpr = postgisWithinSql(
+        'u."locationLng"', 'u."locationLat"',
+        `$${paramIndex}`, `$${paramIndex + 1}`,
+        `$${paramIndex + 2}`,
+      );
+      params.push(filters.lng, filters.lat, filters.radius ?? 50);
+      paramIndex += 3;
 
-      distanceSelect = `${distanceCalc} as "distanceKm"`;
-      conditions.push(`${distanceCalc} <= $${paramIndex++}`);
-      params.push(filters.radius ?? 50);
+      distanceSelect = `${distCalc} as "distanceKm"`;
+      conditions.push(`u."locationLat" IS NOT NULL AND u."locationLng" IS NOT NULL`);
+      conditions.push(withinExpr);
       distanceOrder = 'ORDER BY "distanceKm" ASC NULLS LAST';
     }
 
     const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
+    // COUNT(*) OVER() window function eliminates the separate count query (1 DB round-trip saved)
     const sql = `
       SELECT p.*,
              u.id as "user_id", u.name as "user_name", u."phoneNumber" as "user_phone",
              u."locationLat" as "user_lat", u."locationLng" as "user_lng",
-             ${distanceSelect}
+             ${distanceSelect},
+             COUNT(*) OVER() AS "totalCount"
       FROM "LabourProfile" p
       JOIN "User" u ON p."userId" = u.id
       ${whereClause}
@@ -475,20 +490,11 @@ export class LabourService {
       LIMIT $${paramIndex++} OFFSET $${paramIndex++}
     `;
 
-    const countSql = `
-      SELECT COUNT(*) as total
-      FROM "LabourProfile" p
-      JOIN "User" u ON p."userId" = u.id
-      ${whereClause}
-    `;
-
-    const countParams = [...params];
     params.push(limit, offset);
 
     const rawProfiles = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
-    const countResult = await this.prisma.$queryRawUnsafe<any[]>(countSql, ...countParams);
 
-    const total = Number(countResult[0]?.total || 0);
+    const total = rawProfiles.length > 0 ? Number(rawProfiles[0].totalCount) : 0;
 
     const mapped = rawProfiles.map((p) => ({
       id: p.id,
@@ -509,15 +515,20 @@ export class LabourService {
       }
     }));
 
-    return {
+    const result = {
       data: mapped,
       meta: {
         total,
         page,
         limit,
-        hasMore: offset + mapped.length < total
-      }
+        hasMore: offset + mapped.length < total,
+      },
     };
+
+    // Cache for 30 seconds — short enough to stay fresh, long enough to absorb traffic bursts
+    this.redis.set(cacheKey, JSON.stringify(result), 30).catch(() => { /* non-critical */ });
+
+    return result;
   }
   async findOne(id: string) {
     const profile = await this.prisma.labourProfile.findUnique({

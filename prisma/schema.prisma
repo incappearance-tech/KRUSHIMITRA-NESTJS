@@ -19,6 +19,9 @@ model User {
   isVerified             Boolean             @default(false)
   fcmToken               String?
   deviceOS               String?
+  instanceId             String?             // stable app-installation ID for device binding
+  refreshTokenHash       String?             // SHA-256(refreshToken) — never store the raw token
+  refreshTokenExpiry     DateTime?           // 7-day rolling expiry; null = no active refresh token
   privacyConsent         Boolean             @default(false)
   consentTimestamp       DateTime?
   deletedAt              DateTime?
@@ -129,6 +132,7 @@ model Vehicle {
   images          String[]
   driverName      String?
   driverPhone     String?
+  // Note: completedTripCount is intentionally NOT stored here — derived via LEFT JOIN on demand
   driverLicense   String?
   plan            String?
   expiryDate      DateTime?
@@ -150,6 +154,10 @@ model Vehicle {
   @@index([type, isAvailable])
   @@index([locationLat, locationLng])
   @@index([expiryDate])
+  @@index([transporterId, expiryDate])     // transporter vehicle list with active subscription filter
+  @@index([expiryDate, isAvailable])       // browse: only show active vehicles
+  @@index([ratePerKm])                     // price filter in browse
+  @@index([rating])                        // rating sort/filter
 }
 
 model Driver {
@@ -255,6 +263,9 @@ model Machine {
   @@index([price])
   @@index([createdAt])
   @@index([ownerId])
+  @@index([brand])                      // brand exact-match filter
+  @@index([status, listingType, category]) // triple composite for full browse filter
+  @@index([planExpiresAt])              // subscription expiry checks
 }
 
 model RentalRequest {
@@ -297,6 +308,10 @@ model Order {
   buyer                User     @relation("BuyerOrders", fields: [buyerId], references: [id])
   machine              Machine? @relation(fields: [machineId], references: [id])
   seller               User     @relation("SellerOrders", fields: [sellerId], references: [id])
+
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([machineId])
 }
 
 model AuditLog {
@@ -309,6 +324,11 @@ model AuditLog {
   userAgent String?
   createdAt DateTime @default(now())
   user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([userId, action])
 }
 
 model LabourBooking {
@@ -476,12 +496,15 @@ model FarmerMaterial {
   @@index([farmerId])
   @@index([createdAt])
   @@index([expiresAt])
+  @@index([expiresAt, createdAt])      // browse with expiry filter + date sort
+  @@index([farmerId, expiresAt])       // my materials with expiry filter
 }
 
 enum UserRole {
   FARMER
   LABOUR
   TRANSPORTER
+  NURSERY
   GUEST
 }
 

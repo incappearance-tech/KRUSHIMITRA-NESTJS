@@ -11,9 +11,10 @@ import {
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export enum UserRole {
-  FARMER = 'FARMER',
-  LABOUR = 'LABOUR',
+  FARMER      = 'FARMER',
+  LABOUR      = 'LABOUR',
   TRANSPORTER = 'TRANSPORTER',
+  NURSERY     = 'NURSERY',
 }
 
 export class RequestOtpDto {
@@ -85,6 +86,23 @@ export class VerifyOtpDto {
   @IsNotEmpty({ message: 'Privacy consent is required' })
   @IsBoolean()
   privacyConsent: boolean;
+
+  @ApiPropertyOptional({ description: 'Stable app-installation UUID for device binding' })
+  @IsOptional()
+  @IsString()
+  instanceId?: string;
+}
+
+export class RefreshTokenDto {
+  @ApiProperty({ description: 'Opaque refresh token issued on login' })
+  @IsString()
+  @IsNotEmpty()
+  refreshToken: string;
+
+  @ApiPropertyOptional({ description: 'App-installation ID (must match the one used on login)' })
+  @IsOptional()
+  @IsString()
+  instanceId?: string;
 }
 
 export class UpdateProfileDto {

@@ -22,6 +22,10 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
 
+    "db:clear":     "npx ts-node prisma/clear-db.ts",
+    "seed:e2e":     "npx ts-node prisma/seed-e2e.ts",
+    "seed:bulk":    "npx ts-node prisma/seed-bulk.ts",
+    "seed:all":     "npm run seed:e2e && npm run seed:bulk",
     "seed:rent":    "npx ts-node prisma/seed-rent-machines.ts",
     "seed:all":     "npx ts-node prisma/seed-scenarios.ts",
     "redis:up":     "docker-compose -f docker-compose.dev.yml up -d",

@@ -66,16 +66,46 @@ export class VehicleService {
         });
 
         if (dto.plan === 'free') {
-            await this.prisma.payment.create({
+            // Create Payment + Subscription atomically for free plan
+            // (mirrors what activateSubscription does for paid plans)
+            const startDate = new Date();
+            const endDate   = new Date();
+            endDate.setDate(endDate.getDate() + 30); // free = 30 days
+
+            const payment = await this.prisma.payment.create({
                 data: {
-                    userId: userId,
-                    type: 'SUBSCRIPTION',
-                    amount: 0,
-                    status: 'PAID',
-                    entityId: vehicle.id,
-                    razorpayOrderId: `FREE_${vehicle.id.slice(0, 8)}_${Date.now()}`,
-                    razorpayPaymentId: 'FREE_TRIAL',
-                }
+                    userId,
+                    type:             'VEHICLE_SUBSCRIPTION',
+                    feature:          'VEHICLE_SUBSCRIPTION',
+                    amount:           0,
+                    status:           'PAID',
+                    entityId:         vehicle.id,
+                    entityType:       'VEHICLE',
+                    paymentMethod:    'FREE',
+                    razorpayOrderId:  `FREE_${vehicle.id.slice(0, 8)}_${Date.now()}`,
+                    razorpayPaymentId:'FREE_TRIAL',
+                },
+            });
+
+            await this.prisma.subscription.create({
+                data: {
+                    userId,
+                    paymentId:        payment.id,
+                    subscriptionType: 'VEHICLE_PLAN',
+                    entityId:         vehicle.id,
+                    entityType:       'VEHICLE',
+                    vehicleId:        vehicle.id,
+                    plan:             'free',
+                    startDate,
+                    endDate,
+                    renewalCount:     0,
+                },
+            });
+
+            // Update vehicle with free plan expiry
+            await this.prisma.vehicle.update({
+                where: { id: vehicle.id },
+                data:  { plan: 'free', expiryDate: endDate },
             });
         }
 
@@ -86,22 +116,29 @@ export class VehicleService {
     }
 
     async updateVehicle(userId: string, vehicleId: string, dto: Partial<CreateVehicleDto>) {
+        // ── Ownership check — must be verified before any update ─────────────
+        const ownerProfile = await this.prisma.transporterProfile.findUnique({ where: { userId } });
+        if (!ownerProfile) throw new NotFoundException('Transporter profile not found');
+
+        const ownedVehicle = await this.prisma.vehicle.findFirst({
+            where: { id: vehicleId, transporterId: ownerProfile.id },
+            select: { id: true, model: true },
+        });
+        if (!ownedVehicle) throw new ForbiddenException('Vehicle not found or not yours');
+
         // ── Duplicate driver phone guard (edit) ───────────────────────────────
         if (dto.driverPhone) {
-            const profile = await this.prisma.transporterProfile.findUnique({ where: { userId } });
-            if (profile) {
-                const phoneTaken = await this.prisma.vehicle.findFirst({
-                    where: {
-                        transporterId: profile.id,
-                        id: { not: vehicleId },          // exclude the vehicle being edited
-                        driverPhone: dto.driverPhone.trim(),
-                    },
-                });
-                if (phoneTaken) {
-                    throw new BadRequestException(
-                        `A driver with mobile number "${dto.driverPhone}" is already assigned to another vehicle (${phoneTaken.model}) in your fleet.`,
-                    );
-                }
+            const phoneTaken = await this.prisma.vehicle.findFirst({
+                where: {
+                    transporterId: ownerProfile.id,
+                    id: { not: vehicleId },
+                    driverPhone: dto.driverPhone.trim(),
+                },
+            });
+            if (phoneTaken) {
+                throw new BadRequestException(
+                    `A driver with mobile number "${dto.driverPhone}" is already assigned to another vehicle (${phoneTaken.model}) in your fleet.`,
+                );
             }
         }
 
@@ -122,10 +159,14 @@ export class VehicleService {
     }
 
     async deleteVehicle(userId: string, vehicleId: string) {
-        const vehicle = await this.prisma.vehicle.findUnique({
-            where: { id: vehicleId },
+        // ── Ownership check ───────────────────────────────────────────────────
+        const profile = await this.prisma.transporterProfile.findUnique({ where: { userId } });
+        if (!profile) throw new NotFoundException('Transporter profile not found');
+
+        const vehicle = await this.prisma.vehicle.findFirst({
+            where: { id: vehicleId, transporterId: profile.id },
         });
-        if (!vehicle) throw new NotFoundException('Vehicle not found');
+        if (!vehicle) throw new NotFoundException('Vehicle not found or not yours');
 
         const now = new Date();
 

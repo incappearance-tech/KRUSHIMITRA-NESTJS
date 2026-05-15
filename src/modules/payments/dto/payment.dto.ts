@@ -70,9 +70,10 @@ export class CreatePaymentOrderDto {
   @IsOptional()
   description?: string;
 
-  @ApiPropertyOptional({ description: 'Payment method — UPI | CARD | NETBANKING | FREE' })
+  @ApiPropertyOptional({ description: 'Payment method — UPI (default) or FREE for ₹0 listings', enum: ['UPI', 'FREE'] })
   @IsString()
   @IsOptional()
+  @IsIn(['UPI', 'FREE'])
   paymentMethod?: string;
 }
 

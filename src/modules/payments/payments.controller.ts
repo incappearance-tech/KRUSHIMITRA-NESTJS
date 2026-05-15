@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { PaymentsService } from './payments.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -50,6 +51,7 @@ export class PaymentsController {
   // ── User: Verify payment after Razorpay checkout ────────────────────────────
   @Post('verify')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } }) // 10 verify attempts/min per IP
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Verify Razorpay HMAC signature and activate subscription' })
   verify(@GetUser('id') userId: string, @Body() dto: VerifyPaymentDto) {
